@@ -170,6 +170,7 @@
         left: AppState.input.left,
         right: AppState.input.right,
         accel: AppState.input.accel || (AppState.autoAccel && !AppState.input.brake),
+        manualAccel: AppState.input.accel,
         brake: AppState.input.brake,
         turbo: AppState.input.turbo
       };
@@ -569,9 +570,10 @@
     }
 
     Object.keys(AppState.input).forEach(k => { AppState.input[k] = false; });
+    minimapSmoothPos.clear();
 
     const engine = new global.RaceEngine(sceneMgr.activeTrack, AppState.selectedDriverId, laps, {
-      onCountdown: (label, isGo) => showCountdownBanner(label, isGo),
+      onCountdown: (label, isGo, litCount) => showCountdownBanner(label, isGo, litCount),
       onToast: (msg, color) => showRaceToast(msg, color),
       onLap: (lap, total) => { document.getElementById('hud-lap').textContent = `VUELTA ${lap} / ${total}`; },
       onFinish: (results) => handleRaceFinish(results)
@@ -587,13 +589,18 @@
     document.getElementById('hud-driver-pill').innerHTML = `<span class="pill-dot" style="background:${team.primary}"></span>${driver.short} #${driver.number}`;
     document.getElementById('hud-lap').textContent = `VUELTA 1 / ${laps}`;
 
+    const meterWrap = document.getElementById('hud-launch-meter');
+    if (meterWrap) meterWrap.classList.add('visible');
+
     navigateTo('race', true);
   }
 
-  function showCountdownBanner(label, isGo) {
+  const minimapSmoothPos = new Map();
+
+  function showCountdownBanner(label, isGo, litCount = 0) {
     const el = document.getElementById('countdown-banner');
-    el.textContent = label;
-    el.className = 'countdown-banner show ' + (isGo ? 'go' : 'num');
+    el.textContent = isGo ? '¡YA!' : `●`.repeat(Math.min(5, litCount || 1));
+    el.className = 'countdown-banner show ' + (isGo ? 'go' : 'num lights-dots');
 
     const lights = document.querySelectorAll('#hud-start-lights .sl-bulb');
     const wrap = document.getElementById('hud-start-lights');
@@ -601,16 +608,14 @@
     lights.forEach((b, idx) => {
       b.classList.remove('red', 'green');
       if (isGo) b.classList.add('green');
-      else if (label === '3' && idx < 2) b.classList.add('red');
-      else if (label === '2' && idx < 4) b.classList.add('red');
-      else if (label === '1') b.classList.add('red');
+      else if (idx < litCount) b.classList.add('red');
     });
 
     clearTimeout(countdownTimeout);
     countdownTimeout = setTimeout(() => {
       el.classList.remove('show');
       if (isGo) wrap.classList.remove('visible');
-    }, isGo ? 1050 : 820);
+    }, isGo ? 950 : 620);
   }
 
   function showRaceToast(msg, color = '#FFD43B') {
@@ -640,7 +645,34 @@
     document.getElementById('hud-moral-mult').textContent = `×${hud.moralMultiplier.toFixed(2)} STATS`;
     document.getElementById('hud-moral-box').classList.toggle('overdrive', hud.moralOverdrive);
 
-    document.getElementById('speed-lines').classList.toggle('active', hud.turboActive || hud.kmh > 315);
+    document.getElementById('speed-lines').classList.toggle('active', hud.turboActive || hud.kmh > 305);
+
+    const flashEl = document.getElementById('launch-flash');
+    if (flashEl) flashEl.classList.toggle('active', !!hud.launchFlashActive);
+
+    // Update Mario Kart 5-light Launch Timing Meter
+    const meterWrap = document.getElementById('hud-launch-meter');
+    const meterFill = document.getElementById('hud-launch-fill');
+    const meterHint = document.getElementById('hud-launch-hint');
+    if (meterWrap && meterFill && meterHint) {
+      const showMeter = hud.phase === 'countdown' || (hud.phase === 'racing' && hud.raceElapsed < 1.35);
+      meterWrap.classList.toggle('visible', showMeter);
+      meterWrap.classList.toggle('warn-early', hud.launchStatus === 'early' || hud.launchStatus === 'wheelspin');
+      meterWrap.classList.toggle('go-perfect', hud.launchStatus === 'go' || hud.launchStatus === 'perfect');
+      meterFill.style.width = `${Math.round((hud.launchProgress ?? 0) * 100)}%`;
+
+      if (hud.launchStatus === 'early') {
+        meterHint.textContent = '⚠️ ¡SUELTA EL GAS! VAS A PATINAR';
+      } else if (hud.launchStatus === 'wheelspin') {
+        meterHint.textContent = '💨 ¡PATINAJE DE RUEDAS!';
+      } else if (hud.launchStatus === 'perfect') {
+        meterHint.textContent = '🚀 ¡SALIDA PERFECTA!';
+      } else if (hud.launchStatus === 'go') {
+        meterHint.textContent = '⚡ ¡ACELERA AHORA!';
+      } else {
+        meterHint.textContent = '🚦 ESPERA A QUE SE APAGUEN LAS 5 LUCES';
+      }
+    }
 
     renderMinimap(hud);
   }
@@ -656,36 +688,128 @@
     const b = track.bounds;
     const spanX = Math.max(1, b.maxX - b.minX);
     const spanZ = Math.max(1, b.maxZ - b.minZ);
-    const pad = 14;
+    const pad = 24;
     const scale = Math.min((w - pad * 2) / spanX, (h - pad * 2) / spanZ);
     const offX = (w - spanX * scale) * 0.5;
     const offY = (h - spanZ * scale) * 0.5;
     const toCanvas = (x, z) => [offX + (x - b.minX) * scale, offY + (z - b.minZ) * scale];
 
+    // 1. Thick high-contrast circuit trace (dark outer casing + bright tarmac + crisp center line)
+    ctx.lineJoin = 'round';
+    ctx.lineCap = 'round';
     ctx.beginPath();
     track.frames.forEach((f, idx) => {
       const [cx, cy] = toCanvas(f.pos.x, f.pos.z);
       if (idx === 0) ctx.moveTo(cx, cy); else ctx.lineTo(cx, cy);
     });
     ctx.closePath();
-    ctx.strokeStyle = '#080A10'; ctx.lineWidth = 8; ctx.stroke();
-    ctx.strokeStyle = '#CBD5E1'; ctx.lineWidth = 4; ctx.stroke();
+    ctx.strokeStyle = 'rgba(4, 7, 14, 0.96)';
+    ctx.lineWidth = 14;
+    ctx.stroke();
 
-    const [sx, sy] = toCanvas(track.frames[0].pos.x, track.frames[0].pos.z);
-    ctx.fillStyle = '#FFFFFF'; ctx.fillRect(sx - 4, sy - 4, 8, 8);
+    ctx.strokeStyle = '#94A3B8';
+    ctx.lineWidth = 8.5;
+    ctx.stroke();
 
+    ctx.strokeStyle = 'rgba(255, 255, 255, 0.32)';
+    ctx.lineWidth = 1.6;
+    ctx.stroke();
+
+    // 2. Highlight main start/finish straight segment in crisp cyan accent
+    const N = track.frames.length;
+    ctx.beginPath();
+    for (let k = -10; k <= 16; k++) {
+      const f = track.frames[(k + N) % N];
+      const [cx, cy] = toCanvas(f.pos.x, f.pos.z);
+      if (k === -10) ctx.moveTo(cx, cy); else ctx.lineTo(cx, cy);
+    }
+    ctx.strokeStyle = 'rgba(0, 229, 255, 0.72)';
+    ctx.lineWidth = 4.2;
+    ctx.stroke();
+
+    // 3. Checkered Start/Finish gate bar perpendicular to start tangent
+    const f0 = track.frames[0];
+    const [sx, sy] = toCanvas(f0.pos.x, f0.pos.z);
+    const angle = Math.atan2(f0.tangent.z, f0.tangent.x);
+    ctx.save();
+    ctx.translate(sx, sy);
+    ctx.rotate(angle);
+    ctx.fillStyle = '#080A10';
+    ctx.fillRect(-3.5, -8.5, 7, 17);
+    for (let row = 0; row < 4; row++) {
+      ctx.fillStyle = row % 2 === 0 ? '#FFFFFF' : '#E50914';
+      ctx.fillRect(-2.5, -7.5 + row * 3.8, 5, 3.8);
+    }
+    ctx.restore();
+
+    // 4. Smoothly interpolated real-time team-colored markers for all 21 AI rivals
     hud.racers.forEach(r => {
+      const [tx, ty] = toCanvas(r.worldPos.x, r.worldPos.z);
+      let sm = minimapSmoothPos.get(r.driver.id);
+      if (!sm) {
+        sm = { x: tx, y: ty };
+        minimapSmoothPos.set(r.driver.id, sm);
+      } else {
+        sm.x += (tx - sm.x) * 0.34;
+        sm.y += (ty - sm.y) * 0.34;
+      }
       if (r.isPlayer) return;
-      const [rx, ry] = toCanvas(r.worldPos.x, r.worldPos.z);
-      ctx.beginPath(); ctx.arc(rx, ry, 3.2, 0, Math.PI * 2);
-      ctx.fillStyle = r.team.primary; ctx.fill();
-      ctx.strokeStyle = '#080A10'; ctx.lineWidth = 1.2; ctx.stroke();
+
+      ctx.beginPath();
+      ctx.arc(sm.x, sm.y, 4.1, 0, Math.PI * 2);
+      ctx.fillStyle = r.team.primary;
+      ctx.fill();
+      ctx.strokeStyle = '#080A10';
+      ctx.lineWidth = 1.6;
+      ctx.stroke();
     });
 
-    const [px, py] = toCanvas(hud.playerPos.x, hud.playerPos.z);
-    ctx.beginPath(); ctx.arc(px, py, 5.5, 0, Math.PI * 2);
-    ctx.fillStyle = '#FFD43B'; ctx.fill();
-    ctx.strokeStyle = '#080A10'; ctx.lineWidth = 2.2; ctx.stroke();
+    // 5. Player marker: animated pulsing white ring + gold core + crisp 3-letter HUD code tag
+    const pSm = minimapSmoothPos.get(hud.playerDriver?.id) || { x: toCanvas(hud.playerPos.x, hud.playerPos.z)[0], y: toCanvas(hud.playerPos.x, hud.playerPos.z)[1] };
+    const px = pSm.x, py = pSm.y;
+    const pulse = (Math.sin(performance.now() * 0.009) + 1) * 0.5; // 0..1
+
+    // Outer pulsing white halo ring
+    ctx.beginPath();
+    ctx.arc(px, py, 8.5 + pulse * 5.2, 0, Math.PI * 2);
+    ctx.strokeStyle = `rgba(255, 255, 255, ${(0.92 - pulse * 0.52).toFixed(2)})`;
+    ctx.lineWidth = 2.4;
+    ctx.stroke();
+
+    // Crisp player dot
+    ctx.beginPath();
+    ctx.arc(px, py, 6.2, 0, Math.PI * 2);
+    ctx.fillStyle = '#FFD43B';
+    ctx.fill();
+    ctx.strokeStyle = '#FFFFFF';
+    ctx.lineWidth = 2.2;
+    ctx.stroke();
+
+    // 3-letter HUD tag badge (e.g. NOR, VER, COL) clamped cleanly within canvas bounds
+    const tag = (hud.playerDriver?.short || 'F1').toUpperCase().slice(0, 3);
+    ctx.font = '800 10px "Inter", system-ui, sans-serif';
+    const textW = ctx.measureText(tag).width;
+    const pillW = textW + 10;
+    const pillH = 16;
+    let bx = px - pillW * 0.5;
+    let by = py - 24;
+    if (by < 5) by = py + 12;
+    bx = Math.max(4, Math.min(w - pillW - 4, bx));
+    by = Math.max(4, Math.min(h - pillH - 4, by));
+
+    ctx.fillStyle = 'rgba(8, 10, 18, 0.92)';
+    ctx.strokeStyle = '#FFFFFF';
+    ctx.lineWidth = 1.4;
+    ctx.beginPath();
+    if (ctx.roundRect) ctx.roundRect(bx, by, pillW, pillH, 5);
+    else ctx.rect(bx, by, pillW, pillH);
+    ctx.fill();
+    ctx.stroke();
+
+    ctx.fillStyle = '#FFD43B';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(tag, bx + pillW * 0.5, by + pillH * 0.5 + 0.5);
   }
 
   // ==========================================================================

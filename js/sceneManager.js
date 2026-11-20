@@ -28,18 +28,19 @@
       // Frustum estabilizado (near = 0.5, far = 3500) para evitar recortes y Z-fighting
       this.camera = new THREE.PerspectiveCamera(54, window.innerWidth / window.innerHeight, 0.5, 3500);
 
-      this.hemiLight = new THREE.HemisphereLight('#FFFFFF', '#64748B', 0.58);
+      this.hemiLight = new THREE.HemisphereLight('#F8FAFC', '#1E293B', 0.42);
       this.scene.add(this.hemiLight);
 
-      this.dirLight = new THREE.DirectionalLight('#FFFDF5', 0.82);
-      this.dirLight.position.set(45, 75, 40);
+      // Luz principal dura (Hard Key Light) con shadow.bias = -0.0005 y mapa 2048x2048
+      this.dirLight = new THREE.DirectionalLight('#FFF9EE', 1.12);
+      this.dirLight.position.set(16, 26, 18);
       this.dirLight.castShadow = true;
-      this.dirLight.shadow.mapSize.set(1024, 1024);
+      this.dirLight.shadow.mapSize.set(2048, 2048);
       this.dirLight.shadow.bias = -0.0005;
-      this.dirLight.shadow.normalBias = 0.02;
+      this.dirLight.shadow.normalBias = 0.016;
       this.dirLight.shadow.camera.near = 1;
       this.dirLight.shadow.camera.far = 280;
-      const d = 58;
+      const d = 14;
       this.dirLight.shadow.camera.left = -d;
       this.dirLight.shadow.camera.right = d;
       this.dirLight.shadow.camera.top = d;
@@ -47,9 +48,15 @@
       this.scene.add(this.dirLight);
       this.scene.add(this.dirLight.target);
 
-      this.rimLight = new THREE.DirectionalLight('#7DD3FC', 0.25);
-      this.rimLight.position.set(-40, 28, -45);
+      // Luz de contorno marcada (Rim Light) para esculpir volumen y silueta PBR
+      this.rimLight = new THREE.DirectionalLight('#7DD3FC', 0.92);
+      this.rimLight.position.set(-16, 14, -18);
       this.scene.add(this.rimLight);
+
+      // Luz de relleno tenue en el lado de sombra para conservar textura del mono ignífugo
+      this.fillLight = new THREE.DirectionalLight('#CBD5E1', 0.18);
+      this.fillLight.position.set(-14, 7, 14);
+      this.scene.add(this.fillLight);
 
       this.stageRoot = new THREE.Group();
       this.scene.add(this.stageRoot);
@@ -149,6 +156,40 @@
       this.podiumConfetti = null;
     }
 
+    _setShadowBounds(d) {
+      const cam = this.dirLight.shadow.camera;
+      cam.left = -d;
+      cam.right = d;
+      cam.top = d;
+      cam.bottom = -d;
+      cam.updateProjectionMatrix();
+    }
+
+    _applyStudioLighting(isPodium = false) {
+      this._setShadowBounds(isPodium ? 18 : 11);
+      // Hard primary key light casting strong sculptural shadows across face & suit folds
+      this.dirLight.color.set('#FFF9F0');
+      this.dirLight.intensity = isPodium ? 1.24 : 1.28;
+      this.dirLight.position.set(isPodium ? 14 : 11, isPodium ? 22 : 16, isPodium ? 16 : 13);
+      this.dirLight.target.position.set(0, 1.0, 0);
+      this.dirLight.target.updateMatrixWorld();
+
+      // Low ambient fill with deep floor bounce so shadows carry real mass & volume
+      this.hemiLight.color.set('#F8FAFC');
+      this.hemiLight.groundColor.set('#1E293B');
+      this.hemiLight.intensity = isPodium ? 0.48 : 0.46;
+
+      // Crisp rim light outlining shoulders, cheekbones, hair locks & helmet lacquer
+      this.rimLight.color.set('#BAE6FD');
+      this.rimLight.intensity = isPodium ? 0.78 : 0.84;
+      this.rimLight.position.set(-14, 11, -15);
+
+      if (this.fillLight) {
+        this.fillLight.color.set('#FDE68A');
+        this.fillLight.intensity = 0.14;
+      }
+    }
+
     enterShowcase(driver, isHome = false) {
       const wasStudio = this.mode === 'showcase' || this.mode === 'home' || this.mode === 'editor';
       this.mode = isHome ? 'home' : 'showcase';
@@ -158,13 +199,7 @@
       this.activeTrackId = null;
 
       const team = global.F1Data.getTeamById(driver.teamId);
-      this.dirLight.color.set('#FFFDF5');
-      this.dirLight.intensity = 0.84;
-      this.dirLight.position.set(14, 24, 16);
-      this.dirLight.target.position.set(0, 0, 0);
-      this.dirLight.target.updateMatrixWorld();
-      this.hemiLight.color.set('#FFFFFF');
-      this.hemiLight.intensity = 0.60;
+      this._applyStudioLighting(false);
 
       if (!wasStudio || !this.showcaseTurntable) {
         this._clearStage();
@@ -182,13 +217,7 @@
       this.activeTrackId = null;
 
       const resolvedTeam = team || global.F1Data.getTeamById(driver.teamId);
-      this.dirLight.color.set('#FFFDF5');
-      this.dirLight.intensity = 0.86;
-      this.dirLight.position.set(14, 24, 18);
-      this.dirLight.target.position.set(0, 0, 0);
-      this.dirLight.target.updateMatrixWorld();
-      this.hemiLight.color.set('#FFFFFF');
-      this.hemiLight.intensity = 0.62;
+      this._applyStudioLighting(false);
 
       if (!wasStudio || !this.showcaseTurntable) {
         this._clearStage();
@@ -373,6 +402,7 @@
       this.activeTrackId = circuitMeta.id;
       this.stageRoot.add(this.activeTrack.group);
 
+      this._setShadowBounds(58);
       this.scene.background = new THREE.Color(this.activeTrack.skyColor);
       this.scene.fog = new THREE.Fog(this.activeTrack.fogColor, 260, 1450);
       this.dirLight.color.set(this.activeTrack.sunColor);
@@ -381,7 +411,12 @@
       this.dirLight.target.position.set(0, 0, 0);
       this.dirLight.target.updateMatrixWorld();
       this.hemiLight.color.set(this.activeTrack.ambientColor);
+      this.hemiLight.groundColor.set('#334155');
       this.hemiLight.intensity = circuitMeta.id === 'abudhabi' ? 0.48 : 0.56;
+      this.rimLight.color.set('#7DD3FC');
+      this.rimLight.intensity = circuitMeta.id === 'abudhabi' ? 0.34 : 0.28;
+      this.rimLight.position.set(-40, 28, -45);
+      if (this.fillLight) this.fillLight.intensity = 0.0;
     }
 
     enterRace(circuitMeta, raceEngine) {
@@ -417,13 +452,7 @@
 
       this.scene.background = new THREE.Color('#121528');
       this.scene.fog = new THREE.Fog('#121528', 28, 95);
-      this.dirLight.color.set('#FFFBEB');
-      this.dirLight.intensity = 0.85;
-      this.dirLight.position.set(16, 28, 22);
-      this.dirLight.target.position.set(0, 0, 0);
-      this.dirLight.target.updateMatrixWorld();
-      this.hemiLight.color.set('#FFFFFF');
-      this.hemiLight.intensity = 0.62;
+      this._applyStudioLighting(true);
 
       const floor = new THREE.Mesh(
         new THREE.CircleGeometry(38, 48),
@@ -446,6 +475,8 @@
 
         const block = new THREE.Mesh(new THREE.BoxGeometry(2.75, st.h, 2.5), getPlasticGlossMaterial(st.color, { shininess: 140 }));
         block.position.set(st.x, st.h / 2, 0);
+        block.castShadow = true;
+        block.receiveShadow = true;
         addCartoonOutline(block, [1.03, 1.03, 1.03]);
         this.stageRoot.add(block);
 

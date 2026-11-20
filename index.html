@@ -22,6 +22,9 @@
   <!-- SPEED LINES OVERLAY (Turbo / High Velocity) -->
   <div id="speed-lines" class="speed-lines" aria-hidden="true"></div>
 
+  <!-- PERFECT LAUNCH FLASH OVERLAY -->
+  <div id="launch-flash" class="launch-flash" aria-hidden="true"></div>
+
   <!-- NON-BLOCKING ENGINE STATUS BANNER (only shown if offline/WebGL issue) -->
   <div id="engine-status-toast" class="engine-status-toast" style="display:none;"></div>
 
@@ -53,7 +56,7 @@
           <span class="nf-match">99% ADRENALINA</span>
           <span class="nf-tag">2026</span>
           <span class="nf-tag-outline">22 PILOTOS</span>
-          <span class="nf-tag-outline">PARCHE v1.1</span>
+          <span class="nf-tag-outline">PARCHE v1.3</span>
         </div>
 
         <h1 class="nf-hero-title">
@@ -224,11 +227,18 @@
           <span class="sl-bulb"></span>
           <span class="sl-bulb"></span>
         </div>
+        <div id="hud-launch-meter" class="hud-launch-meter">
+          <div class="lm-track">
+            <div class="lm-sweetspot"></div>
+            <div id="hud-launch-fill" class="lm-fill"></div>
+          </div>
+          <div id="hud-launch-hint" class="lm-hint">🚦 ESPERA A QUE SE APAGUEN LAS 5 LUCES</div>
+        </div>
         <div id="hud-toast" class="hud-toast"></div>
       </div>
 
       <div class="hud-top-right">
-        <canvas id="hud-minimap" class="hud-minimap" width="136" height="116"></canvas>
+        <canvas id="hud-minimap" class="hud-minimap" width="220" height="220"></canvas>
         <div class="hud-action-btns">
           <button id="btn-hud-camera" class="hud-mini-btn" type="button" title="Cambiar Cámara (C)">📷</button>
           <button id="btn-hud-touch" class="hud-mini-btn" type="button" title="Controles Táctiles">📱</button>

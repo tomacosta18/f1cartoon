@@ -1,6 +1,8 @@
 // ============================================================================
-// TOONMATERIALS.JS — Cel-Shading, Outlines, Visera Polarizada PBR (v1.1)
-//                    y Texturas de Asfalto / Dorsales / Estudio
+// TOONMATERIALS.JS — Cel-Shading, Outlines, Materiales PBR Diferenciados (v1.3):
+//                    Mono Ignífugo Mate (R:0.9, M:0.05), Casco Lacado (R:0.15, M:0.35),
+//                    Visera Oscura Iridiscente (M:0.95, R:0.08), Carbono HANS (#1a1a1a, R:0.4),
+//                    Hebilla Metálica (M:0.85) y Oclusión de Contacto
 // ============================================================================
 (function (global) {
   'use strict';
@@ -11,11 +13,16 @@
   let _wetAsphaltTex = null;
   let _visorEnvMap = null;
   let _studGeo = null;
+  let _fabricBumpTex = null;
+  let _carbonBumpTex = null;
+  let _hairBumpTex = null;
+  let _contactShadowTex = null;
   const _toonCache = new Map();
   const _outlineMatCache = new Map();
   const _plateCache = new Map();
   const _dorsalCache = new Map();
   const _visorCache = new Map();
+  const _pbrCache = new Map();
 
   function setTextureSRGB(tex) {
     if (!global.THREE || !tex) return;
@@ -117,7 +124,7 @@
     });
   }
 
-  // Procedural reflective cubemap so metallic polarized helmet visors gleam naturally
+  // Procedural reflective studio/track cubemap with crisp iridescent highlights
   function getVisorEnvMap() {
     if (_visorEnvMap) return _visorEnvMap;
     const faces = [];
@@ -128,34 +135,39 @@
       const ctx = c.getContext('2d');
 
       if (f === 2) {
-        // Top (+Y): bright sky + studio softbox ring
-        const grad = ctx.createRadialGradient(64, 64, 10, 64, 64, 72);
+        // Top (+Y): hard studio key softbox + deep outer skylight
+        const grad = ctx.createRadialGradient(64, 64, 8, 64, 64, 74);
         grad.addColorStop(0, '#FFFFFF');
-        grad.addColorStop(0.45, '#93C5FD');
-        grad.addColorStop(1, '#1E3A8A');
+        grad.addColorStop(0.32, '#BAE6FD');
+        grad.addColorStop(0.68, '#1E3A8A');
+        grad.addColorStop(1, '#0F172A');
         ctx.fillStyle = grad;
         ctx.fillRect(0, 0, 128, 128);
       } else if (f === 3) {
-        // Bottom (-Y): dark track reflection
-        ctx.fillStyle = '#1E293B';
+        // Bottom (-Y): dark asphalt bounce
+        ctx.fillStyle = '#0F172A';
         ctx.fillRect(0, 0, 128, 128);
       } else {
-        // Sides: bright horizon sky + specular light bands + dark asphalt below
+        // Sides: dark twilight sky + crisp iridescent cyan/magenta/gold horizon reflections
         const grad = ctx.createLinearGradient(0, 0, 0, 128);
-        grad.addColorStop(0.0, '#38BDF8');
-        grad.addColorStop(0.28, '#E0F2FE');
-        grad.addColorStop(0.42, '#FFFFFF');
-        grad.addColorStop(0.50, '#FDE68A');
-        grad.addColorStop(0.56, '#334155');
-        grad.addColorStop(1.0, '#0F172A');
+        grad.addColorStop(0.0, '#0F172A');
+        grad.addColorStop(0.24, '#1D4ED8');
+        grad.addColorStop(0.38, '#38BDF8');
+        grad.addColorStop(0.45, '#FFFFFF');
+        grad.addColorStop(0.51, '#F59E0B');
+        grad.addColorStop(0.56, '#A855F7');
+        grad.addColorStop(0.64, '#1E293B');
+        grad.addColorStop(1.0, '#090D16');
         ctx.fillStyle = grad;
         ctx.fillRect(0, 0, 128, 128);
 
-        // Crisp studio reflection streak
-        ctx.fillStyle = 'rgba(255, 255, 255, 0.72)';
-        ctx.fillRect(14, 24, 100, 10);
-        ctx.fillStyle = 'rgba(0, 229, 255, 0.35)';
-        ctx.fillRect(0, 44, 128, 5);
+        // Crisp hard rim-light reflection bars
+        ctx.fillStyle = 'rgba(255, 255, 255, 0.85)';
+        ctx.fillRect(16, 22, 96, 8);
+        ctx.fillStyle = 'rgba(0, 245, 212, 0.52)';
+        ctx.fillRect(0, 40, 128, 6);
+        ctx.fillStyle = 'rgba(236, 72, 153, 0.36)';
+        ctx.fillRect(10, 52, 108, 4);
       }
       faces.push(c);
     }
@@ -167,25 +179,205 @@
     return cubeTex;
   }
 
-  // Visera polarizada reflectante (estrictamente metalness: 0.9, roughness: 0.1)
+  // Procedural matte Nomex textile weave bump map (eliminates plastic-clay feel on racing suit)
+  function getFabricBumpTexture() {
+    if (_fabricBumpTex) return _fabricBumpTex;
+    const canvas = document.createElement('canvas');
+    canvas.width = 64;
+    canvas.height = 64;
+    const ctx = canvas.getContext('2d');
+    ctx.fillStyle = '#808080';
+    ctx.fillRect(0, 0, 64, 64);
+
+    // Fine cross-woven aramid / Nomex fibers + quilted stitching grid
+    for (let y = 0; y < 64; y += 2) {
+      for (let x = 0; x < 64; x += 2) {
+        const v = ((x + y) % 4 === 0) ? 148 : 112;
+        ctx.fillStyle = `rgb(${v},${v},${v})`;
+        ctx.fillRect(x, y, 2, 2);
+      }
+    }
+    ctx.strokeStyle = 'rgba(65, 65, 65, 0.55)';
+    ctx.lineWidth = 1;
+    for (let i = 0; i < 64; i += 16) {
+      ctx.beginPath(); ctx.moveTo(0, i); ctx.lineTo(64, i); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(i, 0); ctx.lineTo(i, 64); ctx.stroke();
+    }
+
+    const tex = new THREE.CanvasTexture(canvas);
+    tex.wrapS = THREE.RepeatWrapping;
+    tex.wrapT = THREE.RepeatWrapping;
+    tex.repeat.set(4, 4);
+    tex.needsUpdate = true;
+    _fabricBumpTex = tex;
+    return tex;
+  }
+
+  // Procedural 2x2 twill carbon-fiber bump texture for HANS collar & cockpit structural parts
+  function getCarbonBumpTexture() {
+    if (_carbonBumpTex) return _carbonBumpTex;
+    const canvas = document.createElement('canvas');
+    canvas.width = 64;
+    canvas.height = 64;
+    const ctx = canvas.getContext('2d');
+    ctx.fillStyle = '#505050';
+    ctx.fillRect(0, 0, 64, 64);
+
+    for (let y = 0; y < 64; y += 4) {
+      for (let x = 0; x < 64; x += 4) {
+        const phase = ((x >> 2) + (y >> 2)) % 4;
+        const bright = phase < 2 ? 195 : 70;
+        ctx.fillStyle = `rgb(${bright},${bright},${bright})`;
+        ctx.fillRect(x, y, 3, 3);
+      }
+    }
+
+    const tex = new THREE.CanvasTexture(canvas);
+    tex.wrapS = THREE.RepeatWrapping;
+    tex.wrapT = THREE.RepeatWrapping;
+    tex.repeat.set(6, 6);
+    tex.needsUpdate = true;
+    _carbonBumpTex = tex;
+    return tex;
+  }
+
+  // Procedural directional strand bump texture for sculpted hair locks
+  function getHairBumpTexture() {
+    if (_hairBumpTex) return _hairBumpTex;
+    const canvas = document.createElement('canvas');
+    canvas.width = 64;
+    canvas.height = 64;
+    const ctx = canvas.getContext('2d');
+    ctx.fillStyle = '#808080';
+    ctx.fillRect(0, 0, 64, 64);
+
+    for (let x = 0; x < 64; x += 2) {
+      const v = 95 + ((x * 29) % 85);
+      ctx.fillStyle = `rgb(${v},${v},${v})`;
+      ctx.fillRect(x, 0, 1, 64);
+    }
+
+    const tex = new THREE.CanvasTexture(canvas);
+    tex.wrapS = THREE.RepeatWrapping;
+    tex.wrapT = THREE.RepeatWrapping;
+    tex.repeat.set(3, 2);
+    tex.needsUpdate = true;
+    _hairBumpTex = tex;
+    return tex;
+  }
+
+  // Soft radial ambient-occlusion contact shadow disc for grounding drivers & cars
+  function getContactShadowTexture() {
+    if (_contactShadowTex) return _contactShadowTex;
+    const canvas = document.createElement('canvas');
+    canvas.width = 128;
+    canvas.height = 128;
+    const ctx = canvas.getContext('2d');
+    const grad = ctx.createRadialGradient(64, 64, 8, 64, 64, 60);
+    grad.addColorStop(0.0, 'rgba(4, 6, 12, 0.78)');
+    grad.addColorStop(0.45, 'rgba(4, 6, 12, 0.44)');
+    grad.addColorStop(0.78, 'rgba(4, 6, 12, 0.14)');
+    grad.addColorStop(1.0, 'rgba(4, 6, 12, 0.0)');
+    ctx.fillStyle = grad;
+    ctx.fillRect(0, 0, 128, 128);
+
+    const tex = new THREE.CanvasTexture(canvas);
+    tex.needsUpdate = true;
+    _contactShadowTex = tex;
+    return tex;
+  }
+
+  function createContactShadowMesh(radiusX = 0.65, radiusZ = 0.65, opacity = 0.82) {
+    const mat = new THREE.MeshBasicMaterial({
+      map: getContactShadowTexture(),
+      transparent: true,
+      opacity,
+      depthWrite: false,
+      depthTest: true,
+      polygonOffset: true,
+      polygonOffsetFactor: -2,
+      polygonOffsetUnits: -2
+    });
+    const mesh = new THREE.Mesh(new THREE.PlaneGeometry(radiusX * 2, radiusZ * 2), mat);
+    mesh.rotation.x = -Math.PI / 2;
+    mesh.renderOrder = 2;
+    return mesh;
+  }
+
+  function toLinearColor(hex) {
+    const c = new THREE.Color(hex);
+    if (typeof c.convertSRGBToLinear === 'function') c.convertSRGBToLinear();
+    return c;
+  }
+
+  // Mono ignífugo mate textil (roughness: 0.9, metalness: 0.05 — cero brillo plástico)
+  function getFabricSuitMaterial(color, opts = {}) {
+    const key = `fabric_${String(color).toUpperCase()}_${opts.bumpScale ?? 0.022}`;
+    if (_pbrCache.has(key)) return _pbrCache.get(key);
+
+    const mat = new THREE.MeshStandardMaterial({
+      color: toLinearColor(color),
+      roughness: 0.9,
+      metalness: 0.05,
+      bumpMap: getFabricBumpTexture(),
+      bumpScale: opts.bumpScale ?? 0.024,
+      envMap: getVisorEnvMap(),
+      envMapIntensity: 0.16,
+      transparent: false,
+      opacity: 1.0,
+      depthWrite: true,
+      depthTest: true,
+      side: THREE.FrontSide
+    });
+    _pbrCache.set(key, mat);
+    return mat;
+  }
+
+  // Carcasa lacada automotriz de casco (roughness: 0.15, metalness: 0.35)
+  function getHelmetShellMaterial(color) {
+    const key = `helmet_${String(color).toUpperCase()}`;
+    if (_pbrCache.has(key)) return _pbrCache.get(key);
+
+    const mat = new THREE.MeshStandardMaterial({
+      color: toLinearColor(color),
+      roughness: 0.15,
+      metalness: 0.35,
+      envMap: getVisorEnvMap(),
+      envMapIntensity: 1.05,
+      transparent: false,
+      opacity: 1.0,
+      depthWrite: true,
+      depthTest: true,
+      side: THREE.FrontSide
+    });
+    _pbrCache.set(key, mat);
+    return mat;
+  }
+
+  // Visera oscura iridiscente reflectante (metalness: 0.95, roughness: 0.08)
   function getVisorMaterial(color = '#111827') {
     const key = String(color).toUpperCase();
     if (_visorCache.has(key)) return _visorCache.get(key);
 
-    // Lighten ultra-dark visor hexes subtly in reflection tint while keeping rich polarized look
     const baseCol = new THREE.Color(color);
     const hsl = {};
     baseCol.getHSL(hsl);
-    const tinted = new THREE.Color().setHSL(hsl.h, Math.min(1, hsl.s * 1.15), Math.max(0.24, Math.min(0.68, hsl.l + 0.16)));
+    // Keep visor dark & deep while letting its iridescent tint gleam cleanly
+    const darkIridescent = new THREE.Color().setHSL(
+      hsl.h,
+      Math.min(1, hsl.s * 1.18 + 0.12),
+      Math.max(0.12, Math.min(0.36, hsl.l * 0.58 + 0.06))
+    );
+    if (typeof darkIridescent.convertSRGBToLinear === 'function') darkIridescent.convertSRGBToLinear();
 
     const mat = new THREE.MeshStandardMaterial({
-      color: tinted,
-      metalness: 0.9,
-      roughness: 0.1,
+      color: darkIridescent,
+      metalness: 0.95,
+      roughness: 0.08,
       envMap: getVisorEnvMap(),
-      envMapIntensity: 1.45,
-      emissive: baseCol.clone().multiplyScalar(0.18),
-      emissiveIntensity: 0.65,
+      envMapIntensity: 1.65,
+      emissive: baseCol.clone().multiplyScalar(0.12),
+      emissiveIntensity: 0.42,
       transparent: false,
       opacity: 1.0,
       depthWrite: true,
@@ -193,6 +385,140 @@
       side: THREE.FrontSide
     });
     _visorCache.set(key, mat);
+    return mat;
+  }
+
+  // Fibra de carbono oscura para sistema HANS (#1a1a1a, roughness: 0.4)
+  function getCarbonFiberMaterial(color = '#1a1a1a') {
+    const key = `carbon_${String(color).toLowerCase()}`;
+    if (_pbrCache.has(key)) return _pbrCache.get(key);
+
+    const mat = new THREE.MeshStandardMaterial({
+      color: new THREE.Color(color),
+      roughness: 0.4,
+      metalness: 0.25,
+      bumpMap: getCarbonBumpTexture(),
+      bumpScale: 0.022,
+      envMap: getVisorEnvMap(),
+      envMapIntensity: 0.88,
+      transparent: false,
+      opacity: 1.0,
+      depthWrite: true,
+      depthTest: true,
+      side: THREE.FrontSide
+    });
+    _pbrCache.set(key, mat);
+    return mat;
+  }
+
+  // Hebilla metálica FIA de arnés de 6 puntos y tornillería de visera (metalness: 0.85)
+  function getBuckleMetalMaterial(color = '#D8E0EA') {
+    const key = `buckle_${String(color).toUpperCase()}`;
+    if (_pbrCache.has(key)) return _pbrCache.get(key);
+
+    const mat = new THREE.MeshStandardMaterial({
+      color: toLinearColor(color),
+      metalness: 0.85,
+      roughness: 0.18,
+      envMap: getVisorEnvMap(),
+      envMapIntensity: 1.45,
+      transparent: false,
+      opacity: 1.0,
+      depthWrite: true,
+      depthTest: true,
+      side: THREE.FrontSide
+    });
+    _pbrCache.set(key, mat);
+    return mat;
+  }
+
+  // Piel PBR mate natural (sin brillo de plastilina ni lavado grisáceo)
+  function getSkinPBRMaterial(color, flatShading = false) {
+    const key = `skin_${String(color).toUpperCase()}_${flatShading ? 'f' : 's'}`;
+    if (_pbrCache.has(key)) return _pbrCache.get(key);
+
+    const mat = new THREE.MeshStandardMaterial({
+      color: toLinearColor(color),
+      roughness: 0.82,
+      metalness: 0.02,
+      envMapIntensity: 0.08,
+      flatShading,
+      transparent: false,
+      opacity: 1.0,
+      depthWrite: true,
+      depthTest: true,
+      side: THREE.FrontSide
+    });
+    _pbrCache.set(key, mat);
+    return mat;
+  }
+
+  // Cabello PBR estructurado con relieve de hebras
+  function getHairPBRMaterial(color) {
+    const key = `hair_${String(color).toUpperCase()}`;
+    if (_pbrCache.has(key)) return _pbrCache.get(key);
+
+    const mat = new THREE.MeshStandardMaterial({
+      color: toLinearColor(color),
+      roughness: 0.68,
+      metalness: 0.06,
+      bumpMap: getHairBumpTexture(),
+      bumpScale: 0.02,
+      envMap: getVisorEnvMap(),
+      envMapIntensity: 0.22,
+      flatShading: true,
+      transparent: false,
+      opacity: 1.0,
+      depthWrite: true,
+      depthTest: true,
+      side: THREE.FrontSide
+    });
+    _pbrCache.set(key, mat);
+    return mat;
+  }
+
+  // Guantes de competición Nomex / gamuza y botas técnicas
+  function getGloveLeatherMaterial(color) {
+    const key = `glove_${String(color).toUpperCase()}`;
+    if (_pbrCache.has(key)) return _pbrCache.get(key);
+
+    const mat = new THREE.MeshStandardMaterial({
+      color: toLinearColor(color),
+      roughness: 0.85,
+      metalness: 0.05,
+      bumpMap: getFabricBumpTexture(),
+      bumpScale: 0.02,
+      envMap: getVisorEnvMap(),
+      envMapIntensity: 0.16,
+      transparent: false,
+      opacity: 1.0,
+      depthWrite: true,
+      depthTest: true,
+      side: THREE.FrontSide
+    });
+    _pbrCache.set(key, mat);
+    return mat;
+  }
+
+  function getBootMaterial(color = '#161B24') {
+    const key = `boot_${String(color).toUpperCase()}`;
+    if (_pbrCache.has(key)) return _pbrCache.get(key);
+
+    const mat = new THREE.MeshStandardMaterial({
+      color: toLinearColor(color),
+      roughness: 0.74,
+      metalness: 0.08,
+      bumpMap: getFabricBumpTexture(),
+      bumpScale: 0.014,
+      envMap: getVisorEnvMap(),
+      envMapIntensity: 0.25,
+      transparent: false,
+      opacity: 1.0,
+      depthWrite: true,
+      depthTest: true,
+      side: THREE.FrontSide
+    });
+    _pbrCache.set(key, mat);
     return mat;
   }
 
@@ -398,6 +724,15 @@
     getPlasticGlossMaterial,
     getVisorEnvMap,
     getVisorMaterial,
+    getFabricSuitMaterial,
+    getHelmetShellMaterial,
+    getCarbonFiberMaterial,
+    getBuckleMetalMaterial,
+    getSkinPBRMaterial,
+    getHairPBRMaterial,
+    getGloveLeatherMaterial,
+    getBootMaterial,
+    createContactShadowMesh,
     getOutlineMaterial,
     addCartoonOutline,
     createLegoStudRow,

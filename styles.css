@@ -983,9 +983,81 @@ html, body {
   transition: opacity 0.25s ease, transform 0.25s var(--spring);
 }
 .hud-start-lights.visible { opacity: 1; transform: scale(1); }
-.sl-bulb { width: 20px; height: 20px; border-radius: 50%; background: #262C3C; border: 2px solid #000; }
-.sl-bulb.red { background: #FF2A44; box-shadow: 0 0 14px #FF2A44; }
-.sl-bulb.green { background: #22FF66; box-shadow: 0 0 16px #22FF66; }
+.sl-bulb { width: 22px; height: 22px; border-radius: 50%; background: #262C3C; border: 2px solid #000; transition: background 0.12s ease, box-shadow 0.12s ease; }
+.sl-bulb.red { background: #FF2A44; box-shadow: 0 0 16px #FF2A44; }
+.sl-bulb.green { background: #22FF66; box-shadow: 0 0 18px #22FF66; }
+
+/* Mario Kart / F1 Launch Timing Meter */
+.hud-launch-meter {
+  width: 252px;
+  background: rgba(11, 13, 20, 0.88);
+  border: 2px solid rgba(255, 255, 255, 0.22);
+  border-radius: 13px;
+  padding: 6px 10px;
+  backdrop-filter: blur(8px);
+  opacity: 0;
+  transform: translateY(-6px) scale(0.94);
+  pointer-events: none;
+  transition: opacity 0.2s ease, transform 0.22s var(--spring), border-color 0.18s ease, box-shadow 0.18s ease;
+}
+.hud-launch-meter.visible { opacity: 1; transform: translateY(0) scale(1); }
+.hud-launch-meter.warn-early {
+  border-color: #EF4444;
+  box-shadow: 0 0 18px rgba(239, 68, 68, 0.55);
+}
+.hud-launch-meter.go-perfect {
+  border-color: #22FF66;
+  box-shadow: 0 0 20px rgba(34, 255, 102, 0.65);
+}
+.lm-track {
+  position: relative;
+  height: 10px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.14);
+  overflow: hidden;
+  margin-bottom: 4px;
+}
+.lm-sweetspot {
+  position: absolute;
+  right: 0;
+  top: 0;
+  bottom: 0;
+  width: 8%;
+  background: rgba(34, 255, 102, 0.58);
+  border-left: 2px solid #22FF66;
+}
+.lm-fill {
+  height: 100%;
+  width: 0%;
+  border-radius: 999px;
+  background: linear-gradient(90deg, #FF2A44 0%, #FFD43B 78%, #22FF66 100%);
+  transition: width 0.05s linear;
+}
+.hud-launch-meter.warn-early .lm-fill {
+  background: linear-gradient(90deg, #DC2626, #FF2A44);
+}
+.lm-hint {
+  text-align: center;
+  font-family: 'Fredoka', sans-serif;
+  font-weight: 700;
+  font-size: 0.7rem;
+  letter-spacing: 0.03em;
+  color: #E2E8F0;
+}
+.hud-launch-meter.warn-early .lm-hint { color: #FCA5A5; }
+.hud-launch-meter.go-perfect .lm-hint { color: #4ADE80; }
+
+/* Perfect Launch Screen Flash */
+.launch-flash {
+  position: fixed;
+  inset: 0;
+  z-index: 3;
+  pointer-events: none;
+  opacity: 0;
+  background: radial-gradient(circle at 50% 62%, rgba(56, 189, 248, 0.36), rgba(34, 255, 102, 0.18) 45%, transparent 78%);
+  transition: opacity 0.22s ease;
+}
+.launch-flash.active { opacity: 1; }
 
 .hud-toast {
   background: rgba(11, 13, 20, 0.92);
@@ -1003,9 +1075,13 @@ html, body {
 
 .hud-top-right { display: flex; flex-direction: column; align-items: flex-end; gap: 8px; }
 .hud-minimap {
-  background: rgba(11, 13, 20, 0.76);
-  border: 2px solid rgba(255, 255, 255, 0.2);
-  border-radius: 16px;
+  width: 216px;
+  height: 216px;
+  background: rgba(10, 14, 24, 0.84);
+  border: 2.5px solid rgba(255, 255, 255, 0.26);
+  border-radius: 18px;
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.55), inset 0 0 0 1px rgba(0, 229, 255, 0.16);
+  backdrop-filter: blur(8px);
 }
 .hud-action-btns { display: flex; gap: 6px; }
 .hud-mini-btn {
@@ -1034,6 +1110,11 @@ html, body {
   opacity: 0;
   pointer-events: none;
   transition: transform 0.25s var(--spring), opacity 0.22s ease;
+}
+.countdown-banner.lights-dots {
+  color: #FF2A44;
+  font-size: clamp(2.6rem, 6vw, 4.2rem);
+  letter-spacing: 0.14em;
 }
 .countdown-banner.show { opacity: 1; transform: translate(-50%, -50%) scale(1); }
 .countdown-banner.go { color: #22FF66; }
@@ -1252,7 +1333,8 @@ html, body {
 @media (max-width: 680px) {
   .screen { padding: 10px 12px 12px; }
   .nf-circuit-rail { max-height: 36vh; overflow-y: auto; }
-  .hud-minimap { width: 92px; height: 80px; }
+  .hud-minimap { width: 144px; height: 144px; }
+  .hud-launch-meter { width: 196px; }
   .hud-track-pills { display: none; }
   .speedo-card { width: 112px; height: 74px; }
   .speed-num { font-size: 1.4rem; }
