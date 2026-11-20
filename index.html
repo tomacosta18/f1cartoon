@@ -1,0 +1,384 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+  <title>F1 Brick Turbo 3D — Switch × Netflix Edition</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Fredoka:wght@500;600;700&family=Inter:wght@600;700;800;900&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="styles.css" />
+  <!-- Three.js UMD clásico: funciona en file://, localhost y Netlify sin bloqueos CORS -->
+  <script src="https://cdn.jsdelivr.net/npm/three@0.147.0/build/three.min.js"
+          onerror="this.onerror=null;var s=document.createElement('script');s.src='https://unpkg.com/three@0.147.0/build/three.min.js';document.head.appendChild(s);"></script>
+</head>
+<body>
+  <!-- LIVE FULLSCREEN 3D WEBGL STAGE -->
+  <canvas id="game-canvas"></canvas>
+
+  <!-- CINEMATIC NETFLIX VIGNETTE OVERLAY (hidden during active racing) -->
+  <div id="cinematic-vignette" class="cinematic-vignette active" aria-hidden="true"></div>
+
+  <!-- SPEED LINES OVERLAY (Turbo / High Velocity) -->
+  <div id="speed-lines" class="speed-lines" aria-hidden="true"></div>
+
+  <!-- NON-BLOCKING ENGINE STATUS BANNER (only shown if offline/WebGL issue) -->
+  <div id="engine-status-toast" class="engine-status-toast" style="display:none;"></div>
+
+  <!-- ====================================================================
+       SCREEN 1: HOME — NETFLIX CINEMATIC HERO × NINTENDO SWITCH
+       ==================================================================== -->
+  <section id="screen-home" class="screen active">
+    <header class="nf-navbar">
+      <div class="nf-brand">
+        <span class="nf-n-badge">F1</span>
+        <span class="nf-brand-text">BRICK<strong>TURBO</strong></span>
+      </div>
+
+      <nav class="nf-nav-links" aria-label="Navegación principal">
+        <button id="nav-home" class="nf-nav-link active" type="button">Inicio</button>
+        <button id="nav-free" class="nf-nav-link" type="button">Carrera Libre</button>
+        <button id="nav-campaign" class="nf-nav-link" type="button">Modo Campaña</button>
+      </nav>
+
+      <div class="nf-nav-right">
+        <span class="switch-joy-pill">🎮 SWITCH 3D</span>
+        <button class="icon-pill js-mute-btn" type="button" title="Sonido">🔊</button>
+      </div>
+    </header>
+
+    <div class="nf-home-main">
+      <div class="nf-hero-copy">
+        <div class="nf-meta-row">
+          <span class="nf-match">99% ADRENALINA</span>
+          <span class="nf-tag">2026</span>
+          <span class="nf-tag-outline">22 PILOTOS</span>
+          <span class="nf-tag-outline">3D TOON</span>
+        </div>
+
+        <h1 class="nf-hero-title">
+          F1 <span class="accent-gold">BRICK</span> <span class="accent-cyan">TURBO</span>
+        </h1>
+
+        <p class="nf-hero-desc">
+          Carreras arcade 3D al estilo LEGO Switch con pilotos cabezones, 8 atributos con impacto real, barra de Turbo y Moral de la hinchada en Mónaco, Silverstone y Abu Dabi.
+        </p>
+
+        <div class="nf-hero-actions">
+          <button id="btn-mode-free" class="nf-btn nf-btn-play" type="button">
+            <span class="btn-ico">▶</span> CARRERA LIBRE
+          </button>
+          <button id="btn-mode-campaign" class="nf-btn nf-btn-campaign" type="button">
+            <span class="btn-ico">🏆</span> MODO CAMPAÑA
+          </button>
+        </div>
+
+        <div class="nf-controls-hint">
+          <span><strong>PC:</strong> WASD / Flechas · <kbd>ESPACIO</kbd> Turbo · <kbd>C</kbd> Cámara · <kbd>P</kbd> Pausa</span>
+          <span>·</span>
+          <span><strong>Android / Móvil:</strong> Táctil automático</span>
+        </div>
+      </div>
+
+      <!-- NETFLIX HORIZONTAL QUICK-LAUNCH RAIL -->
+      <div class="nf-home-rail-wrap">
+        <div class="nf-rail-header">
+          <h3>Grandes Premios Destacados <span class="rail-sub">· Toca uno para correr directo</span></h3>
+        </div>
+        <div id="home-gp-rail" class="nf-poster-rail"></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ====================================================================
+       SCREEN 2: DRIVER & TEAM SELECTION — SHOWCASE 3D + NETFLIX CAROUSEL
+       ==================================================================== -->
+  <section id="screen-select" class="screen">
+    <header class="nf-subbar">
+      <div class="subbar-left">
+        <button id="btn-select-back" class="nf-btn-ghost" type="button">← Inicio</button>
+        <div class="subbar-titles">
+          <span id="select-mode-badge" class="nf-mode-chip">⚡ CARRERA LIBRE</span>
+          <h2>Elige tu Piloto y Escudería</h2>
+        </div>
+      </div>
+
+      <div class="subbar-right">
+        <button class="icon-pill js-mute-btn" type="button" title="Sonido">🔊</button>
+        <button id="btn-select-next" class="nf-btn nf-btn-play nf-btn-sm" type="button">
+          ▶ ELEGIR CIRCUITO
+        </button>
+      </div>
+    </header>
+
+    <!-- UPPER STAGE: OPEN 3D ROTATING SHOWCASE (LEFT/CENTER) + GLASS TELEMETRY CARD (RIGHT) -->
+    <div class="select-hero-stage">
+      <div class="showcase-left-overlay">
+        <div id="showcase-nameplate" class="showcase-nameplate"></div>
+      </div>
+
+      <aside class="nf-telemetry-card">
+        <div class="tc-header">
+          <div>
+            <div id="stat-team-badge" class="team-badge">McLaren</div>
+            <h3 id="stat-driver-name">Lando Norris</h3>
+            <div id="stat-driver-meta" class="driver-meta">🇬🇧 #4 · Rey del Ritmo Papaya</div>
+          </div>
+          <div class="tc-ovr-pair">
+            <div class="ovr-chip ovr-driver">
+              <span class="ovr-lbl">PILOTO</span>
+              <span id="stat-driver-ovr" class="ovr-num">91</span>
+            </div>
+            <div class="ovr-chip ovr-team">
+              <span class="ovr-lbl">EQUIPO</span>
+              <span id="stat-team-ovr" class="ovr-num">94</span>
+            </div>
+          </div>
+        </div>
+
+        <div id="stat-bars-list" class="stat-bars-grid"></div>
+      </aside>
+    </div>
+
+    <!-- BOTTOM NETFLIX CAROUSEL RAIL: 11 TEAMS FILTER + 22 DRIVERS HORIZONTAL CARDS -->
+    <div class="nf-driver-dock">
+      <div class="dock-top-row">
+        <nav id="team-filter-bar" class="team-filter-bar" aria-label="Filtrar por escudería"></nav>
+        <div class="rail-arrows">
+          <button id="rail-prev" class="rail-arrow-btn" type="button" aria-label="Anterior">‹</button>
+          <button id="rail-next" class="rail-arrow-btn" type="button" aria-label="Siguiente">›</button>
+        </div>
+      </div>
+
+      <div id="driver-grid" class="nf-driver-rail"></div>
+    </div>
+  </section>
+
+  <!-- ====================================================================
+       SCREEN 3: CIRCUIT SELECTION — LIVE 3D FLYOVER + NETFLIX EPISODE RAIL
+       ==================================================================== -->
+  <section id="screen-circuit" class="screen">
+    <header class="nf-subbar">
+      <div class="subbar-left">
+        <button id="btn-circuit-back" class="nf-btn-ghost" type="button">← Piloto</button>
+        <div class="subbar-titles">
+          <span class="nf-mode-chip">🗺️ CALENDARIO OFICIAL</span>
+          <h2 id="circuit-screen-title">Elige tu Circuito</h2>
+        </div>
+      </div>
+
+      <div class="subbar-right">
+        <span id="circuit-screen-sub" class="subbar-hint">Vista aérea 3D en vivo</span>
+        <button class="icon-pill js-mute-btn" type="button" title="Sonido">🔊</button>
+      </div>
+    </header>
+
+    <div class="circuit-spacer"></div>
+
+    <div class="nf-circuit-dock">
+      <div id="circuit-cards" class="nf-circuit-rail"></div>
+
+      <div class="circuit-launch-bar">
+        <div id="laps-selector-wrap" class="laps-selector">
+          <span class="laps-label">VUELTAS</span>
+          <button class="lap-chip" type="button" data-laps="2">2</button>
+          <button class="lap-chip active" type="button" data-laps="3">3</button>
+          <button class="lap-chip" type="button" data-laps="5">5</button>
+        </div>
+        <button id="btn-start-race" class="nf-btn nf-btn-go" type="button">
+          🚦 ¡A LA PARRILLA!
+        </button>
+      </div>
+    </div>
+  </section>
+
+  <!-- ====================================================================
+       SCREEN 4: IN-RACE ARCADE HUD & MOBILE/ANDROID TOUCH CONTROLS
+       ==================================================================== -->
+  <section id="screen-race" class="screen">
+    <div class="hud-top">
+      <div class="hud-top-left">
+        <div class="hud-pos-card">
+          <span id="hud-pos-num" class="pos-big">10°</span>
+          <span id="hud-pos-total" class="pos-total">/ 22</span>
+        </div>
+        <div class="hud-meta-stack">
+          <div id="hud-lap" class="hud-pill">VUELTA 1 / 3</div>
+          <div class="hud-sub-pills">
+            <span id="hud-timer" class="hud-pill-sm">00:00.00</span>
+            <span id="hud-driver-pill" class="hud-pill-sm">NOR #4</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="hud-top-center">
+        <div class="hud-track-pills">
+          <span id="hud-circuit-pill" class="hud-pill-sm">🇲🇨 Mónaco</span>
+          <span id="hud-weather-pill" class="hud-pill-sm">☀️ Sol</span>
+        </div>
+        <div id="hud-start-lights" class="hud-start-lights">
+          <span class="sl-bulb"></span>
+          <span class="sl-bulb"></span>
+          <span class="sl-bulb"></span>
+          <span class="sl-bulb"></span>
+          <span class="sl-bulb"></span>
+        </div>
+        <div id="hud-toast" class="hud-toast"></div>
+      </div>
+
+      <div class="hud-top-right">
+        <canvas id="hud-minimap" class="hud-minimap" width="136" height="116"></canvas>
+        <div class="hud-action-btns">
+          <button id="btn-hud-camera" class="hud-mini-btn" type="button" title="Cambiar Cámara (C)">📷</button>
+          <button id="btn-hud-touch" class="hud-mini-btn" type="button" title="Controles Táctiles">📱</button>
+          <button class="hud-mini-btn js-mute-btn" type="button" title="Sonido">🔊</button>
+          <button id="btn-hud-pause" class="hud-mini-btn" type="button" title="Pausa (P)">⏸️</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="countdown-banner" class="countdown-banner">3</div>
+
+    <div class="hud-bottom">
+      <div id="hud-moral-box" class="hud-meter-card moral-card">
+        <div class="hm-top">
+          <span class="hm-title">⭐ MORAL · HINCHADA</span>
+          <span id="hud-moral-mult" class="moral-mult">×1.00 STATS</span>
+        </div>
+        <div class="hm-track">
+          <div id="hud-moral-fill" class="hm-fill moral-fill"></div>
+        </div>
+        <div class="hm-hint">Carisma + tribunas + adelantamientos = ¡MORAL MÁXIMA!</div>
+      </div>
+
+      <div class="hud-right-cluster">
+        <div id="hud-turbo-box" class="hud-meter-card turbo-card" title="Pulsa ESPACIO / SHIFT o toca aquí">
+          <div class="hm-top">
+            <span class="hm-title">🔥 TURBO</span>
+            <span class="turbo-key">ESPACIO / TOCAR</span>
+          </div>
+          <div class="hm-track">
+            <div id="hud-turbo-fill" class="hm-fill turbo-fill"></div>
+          </div>
+        </div>
+
+        <div class="speedo-card">
+          <svg class="speedo-svg" viewBox="0 0 120 74">
+            <path d="M 14 64 A 46 46 0 0 1 106 64" fill="none" stroke="rgba(255,255,255,0.16)" stroke-width="11" stroke-linecap="round" />
+            <path id="hud-speed-arc-fill" d="M 14 64 A 46 46 0 0 1 106 64" fill="none" stroke="url(#speedGrad)" stroke-width="11" stroke-linecap="round" stroke-dasharray="220" stroke-dashoffset="220" />
+            <defs>
+              <linearGradient id="speedGrad" x1="0%" y1="0%" x2="100%" y2="0%">
+                <stop offset="0%" stop-color="#22C55E" />
+                <stop offset="55%" stop-color="#FFD43B" />
+                <stop offset="100%" stop-color="#E50914" />
+              </linearGradient>
+            </defs>
+          </svg>
+          <div class="speedo-readout">
+            <span id="hud-speed-val" class="speed-num">0</span>
+            <span class="speed-unit">KM/H</span>
+          </div>
+          <span id="hud-gear-badge" class="gear-badge">M1</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- MOBILE / ANDROID MULTI-TOUCH ARCADE CONTROLS -->
+    <div id="touch-controls" class="touch-controls">
+      <div class="touch-left-pad">
+        <button id="touch-left" class="touch-btn touch-steer" type="button" aria-label="Izquierda">◀</button>
+        <button id="touch-right" class="touch-btn touch-steer" type="button" aria-label="Derecha">▶</button>
+      </div>
+      <div class="touch-right-pad">
+        <button id="touch-auto-accel" class="touch-auto-pill" type="button">AUTO GAS: ON</button>
+        <div class="touch-pedals-row">
+          <button id="touch-brake" class="touch-btn touch-brake" type="button">FRENO</button>
+          <button id="touch-turbo" class="touch-btn touch-turbo" type="button">🔥 TURBO</button>
+          <button id="touch-accel" class="touch-btn touch-accel" type="button">GAS</button>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ====================================================================
+       PAUSE MODAL
+       ==================================================================== -->
+  <div id="modal-pause" class="modal-overlay">
+    <div class="pause-card">
+      <h2>⏸️ CARRERA EN PAUSA</h2>
+      <div class="pause-btns">
+        <button id="btn-pause-resume" class="nf-btn nf-btn-play" type="button">▶ CONTINUAR</button>
+        <button id="btn-pause-restart" class="nf-btn nf-btn-campaign" type="button">🔄 REINICIAR CARRERA</button>
+        <button id="btn-pause-autoaccel" class="nf-btn-ghost full-w" type="button">⚡ Auto-Acelerar: NO</button>
+        <button id="btn-pause-exit" class="nf-btn-danger full-w" type="button">🏠 SALIR AL MENÚ</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ====================================================================
+       SCREEN 6: 3D PODIUM & NETFLIX POST-RACE STANDINGS
+       ==================================================================== -->
+  <section id="screen-results" class="screen">
+    <header class="results-header">
+      <h2 id="results-title">🏆 ¡PODIO DEL GRAN PREMIO!</h2>
+      <p id="results-sub">Resultados oficiales</p>
+    </header>
+
+    <div class="podium-spacer"></div>
+
+    <div class="results-dock">
+      <div class="results-top-bar">
+        <div class="results-tabs">
+          <button class="res-tab active" type="button" data-tab="race">🏁 Clasificación GP</button>
+          <button class="res-tab campaign-only-tab" type="button" data-tab="drivers" style="display:none;">👑 Mundial Pilotos</button>
+          <button class="res-tab campaign-only-tab" type="button" data-tab="teams" style="display:none;">🏗️ Constructores</button>
+        </div>
+        <div class="results-actions">
+          <button id="btn-next-gp" class="nf-btn nf-btn-play nf-btn-sm" type="button" style="display:none;">▶ SIGUIENTE GP</button>
+          <button id="btn-replay-race" class="nf-btn nf-btn-campaign nf-btn-sm" type="button">🔄 Repetir</button>
+          <button id="btn-results-menu" class="nf-btn-ghost" type="button">🏠 Menú</button>
+        </div>
+      </div>
+
+      <div class="results-tables-wrap">
+        <div id="pane-race" class="res-table-pane active">
+          <table class="results-table">
+            <thead>
+              <tr><th>Pos</th><th>Piloto</th><th>Escudería</th><th>Tiempo</th><th>Pts</th></tr>
+            </thead>
+            <tbody id="results-race-tbody"></tbody>
+          </table>
+        </div>
+
+        <div id="pane-drivers" class="res-table-pane">
+          <table class="results-table">
+            <thead>
+              <tr><th>Pos</th><th>Piloto</th><th>Escudería</th><th>Puntos</th></tr>
+            </thead>
+            <tbody id="results-drivers-tbody"></tbody>
+          </table>
+        </div>
+
+        <div id="pane-teams" class="res-table-pane">
+          <table class="results-table">
+            <thead>
+              <tr><th>Pos</th><th>Escudería</th><th>Rendimiento</th><th>Puntos</th></tr>
+            </thead>
+            <tbody id="results-teams-tbody"></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Deterministic classic scripts (works offline/file:// AND http/Netlify!) -->
+  <script src="js/data.js"></script>
+  <script src="js/audio.js"></script>
+  <script src="js/toonMaterials.js"></script>
+  <script src="js/carBuilder.js"></script>
+  <script src="js/tracks.js"></script>
+  <script src="js/raceEngine.js"></script>
+  <script src="js/sceneManager.js"></script>
+  <script src="js/main.js"></script>
+</body>
+</html>
