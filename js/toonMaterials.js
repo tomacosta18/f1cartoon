@@ -715,6 +715,154 @@
     return tex;
   }
 
+  // Carteles físicos FIA de referencia de frenada (150m, 100m, 50m)
+  const _brakeBoardCache = new Map();
+  let _brakingRubberTex = null;
+  let _catchFenceTex = null;
+  let _pitSignTex = null;
+
+  function createBrakeBoardTexture(meters) {
+    const key = String(meters);
+    if (_brakeBoardCache.has(key)) return _brakeBoardCache.get(key);
+
+    const canvas = document.createElement('canvas');
+    canvas.width = 256;
+    canvas.height = 160;
+    const ctx = canvas.getContext('2d');
+
+    // Crisp white reflective board with high-visibility FIA red/black frame
+    ctx.fillStyle = '#F8FAFC';
+    ctx.fillRect(0, 0, 256, 160);
+
+    // Top red FIA stripe + bottom dark bar
+    ctx.fillStyle = meters <= 50 ? '#E50914' : meters <= 100 ? '#F97316' : '#0F172A';
+    ctx.fillRect(0, 0, 256, 26);
+    ctx.fillStyle = '#0F172A';
+    ctx.fillRect(0, 134, 256, 26);
+
+    // Outer thick border
+    ctx.strokeStyle = '#0B0F1A';
+    ctx.lineWidth = 10;
+    ctx.strokeRect(5, 5, 246, 150);
+
+    // Bold high-contrast distance number (150, 100, 50)
+    ctx.fillStyle = '#0B0F1A';
+    ctx.font = '900 84px "Inter", "Fredoka", system-ui, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(String(meters), 128, 84);
+
+    // Small "m" indicator on bottom band
+    ctx.fillStyle = '#FFFFFF';
+    ctx.font = '800 18px "Inter", system-ui, sans-serif';
+    ctx.fillText(`${meters} METROS · FRENADA`, 128, 147);
+
+    const tex = new THREE.CanvasTexture(canvas);
+    setTextureSRGB(tex);
+    tex.anisotropy = 4;
+    _brakeBoardCache.set(key, tex);
+    return tex;
+  }
+
+  // Dark rubber tire skid/braking marks along the ideal braking zone entry
+  function getBrakingRubberTexture() {
+    if (_brakingRubberTex) return _brakingRubberTex;
+    const canvas = document.createElement('canvas');
+    canvas.width = 128;
+    canvas.height = 256;
+    const ctx = canvas.getContext('2d');
+    ctx.clearRect(0, 0, 128, 256);
+
+    // Dual parallel heavy rubber lockup streaks tapering smoothly at both ends
+    const drawStreak = (cx) => {
+      const grad = ctx.createLinearGradient(0, 0, 0, 256);
+      grad.addColorStop(0.0, 'rgba(10, 12, 18, 0.0)');
+      grad.addColorStop(0.18, 'rgba(12, 14, 20, 0.42)');
+      grad.addColorStop(0.65, 'rgba(8, 10, 14, 0.64)');
+      grad.addColorStop(0.88, 'rgba(10, 12, 18, 0.48)');
+      grad.addColorStop(1.0, 'rgba(10, 12, 18, 0.0)');
+      ctx.fillStyle = grad;
+      ctx.fillRect(cx - 12, 0, 24, 256);
+
+      // Inner darker tire contact patch
+      ctx.fillStyle = 'rgba(6, 8, 12, 0.32)';
+      ctx.fillRect(cx - 6, 28, 12, 198);
+    };
+    drawStreak(36);
+    drawStreak(92);
+
+    // Subtle rubber marbles texture
+    for (let i = 0; i < 160; i++) {
+      const rx = (i * 53) % 128;
+      const ry = 20 + ((i * 97) % 216);
+      ctx.fillStyle = 'rgba(8, 10, 16, 0.25)';
+      ctx.fillRect(rx, ry, 2, 4);
+    }
+
+    const tex = new THREE.CanvasTexture(canvas);
+    tex.needsUpdate = true;
+    _brakingRubberTex = tex;
+    return tex;
+  }
+
+  // FIA metallic debris catch-fence wire mesh texture
+  function getCatchFenceTexture() {
+    if (_catchFenceTex) return _catchFenceTex;
+    const canvas = document.createElement('canvas');
+    canvas.width = 64;
+    canvas.height = 64;
+    const ctx = canvas.getContext('2d');
+    ctx.clearRect(0, 0, 64, 64);
+
+    // Fine metallic chain-link grid + horizontal high-tensile FIA cables
+    ctx.strokeStyle = 'rgba(203, 213, 225, 0.42)';
+    ctx.lineWidth = 1.5;
+    for (let i = 0; i <= 64; i += 8) {
+      ctx.beginPath(); ctx.moveTo(i, 0); ctx.lineTo(i, 64); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(0, i); ctx.lineTo(64, i); ctx.stroke();
+    }
+    ctx.strokeStyle = 'rgba(241, 245, 249, 0.78)';
+    ctx.lineWidth = 2.5;
+    [12, 32, 52].forEach(y => {
+      ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(64, y); ctx.stroke();
+    });
+
+    const tex = new THREE.CanvasTexture(canvas);
+    tex.wrapS = THREE.RepeatWrapping;
+    tex.wrapT = THREE.RepeatWrapping;
+    tex.needsUpdate = true;
+    _catchFenceTex = tex;
+    return tex;
+  }
+
+  // Pit Lane & Boxes header sign texture
+  function createPitSignTexture(circuitName = 'F1 GRAND PRIX') {
+    if (_pitSignTex && _pitSignTex._label === circuitName) return _pitSignTex;
+    const canvas = document.createElement('canvas');
+    canvas.width = 512;
+    canvas.height = 96;
+    const ctx = canvas.getContext('2d');
+
+    ctx.fillStyle = '#0F172A';
+    ctx.fillRect(0, 0, 512, 96);
+    ctx.fillStyle = '#E50914';
+    ctx.fillRect(0, 0, 512, 12);
+    ctx.fillStyle = '#00E5FF';
+    ctx.fillRect(0, 84, 512, 12);
+
+    ctx.fillStyle = '#FFFFFF';
+    ctx.font = '900 28px "Fredoka", "Inter", system-ui, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(`PIT LANE · BOXES · ${String(circuitName).toUpperCase()}`, 256, 49);
+
+    const tex = new THREE.CanvasTexture(canvas);
+    setTextureSRGB(tex);
+    tex._label = circuitName;
+    _pitSignTex = tex;
+    return tex;
+  }
+
   global.ToonMat = {
     setTextureSRGB,
     mixHexColors,
@@ -739,6 +887,10 @@
     getCheckeredTexture,
     getAsphaltTexture,
     createNumberPlateTexture,
-    createDorsalTexture
+    createDorsalTexture,
+    createBrakeBoardTexture,
+    getBrakingRubberTexture,
+    getCatchFenceTexture,
+    createPitSignTexture
   };
 })(window);

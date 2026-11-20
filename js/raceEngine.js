@@ -1,17 +1,32 @@
 // ============================================================================
-// RACEENGINE.JS — Parche v1.2: Física con Masa e Inercia, Subviraje Progresivo,
-//                 Suspensión Dinámica (Pitch & Roll), IA Competitiva al Apex,
-//                 Largada Mario Kart (5 Luces), Colisiones Sólidas y Pool de
-//                 Partículas (Chispas, Fuego Backfire y Humo de Neumáticos)
+// RACEENGINE.JS — Parche v1.4: Control 100% Manual (Dirección Cinemática Real
+//                 sin Auto-Centrado en Spline), Ritmo -20% Más Pausado, Frenada
+//                 Efectiva en Horquillas + Drag de Dirección, Cero Basura GC,
+//                 IA Defensiva (<18m) con ERS, Largada 150ms y Colisiones Sólidas
 // ============================================================================
 (function (global) {
   'use strict';
 
-  // Calibrated so ~15% calmer world-space pace still displays authentic F1 km/h
-  const SPEED_DISPLAY_SCALE = 3.72;
-  const CAR_MASS = 798; // kg
+  // Calibrated so the -20% calmer world-space pace displays authentic F1 km/h (~290-330 km/h)
+  const SPEED_DISPLAY_SCALE = 4.65;
+  const CAR_MASS = 798;   // kg
+  const WHEELBASE = 5.1;  // virtual F1 wheelbase for predictable bicycle steering kinematics
   const CAR_LEN = 4.65;
   const CAR_WID = 2.34;
+
+  function createSampleStruct() {
+    return {
+      pos: new THREE.Vector3(),
+      tangent: new THREE.Vector3(),
+      right: new THREE.Vector3(),
+      curvature: 0,
+      width: 0,
+      halfWidth: 0,
+      hasGrandstand: false,
+      s: 0,
+      d: 0
+    };
+  }
 
   class RaceEngine {
     constructor(track, playerDriverId, totalLaps = 3, callbacks = {}) {
@@ -23,12 +38,12 @@
 
       this.root = new THREE.Group();
       this.racers = [];
+      this._orderedRacers = [];
       this.player = null;
 
       // Mario Kart / F1 5-light start minigame state
       this.phase = 'countdown';
       this.countdownTimer = 0;
-      // 5 lights illuminate at 0.0, 0.72, 1.44, 2.16, 2.88 -> hold 0.55..0.90s -> Lights Out!
       this.lightsOutTime = 3.60 + 0.50 + Math.random() * 0.35;
       this.lastLitCount = -1;
       this.lightsOutTriggered = false;
@@ -36,30 +51,56 @@
       this.playerLaunchResolved = false;
       this.launchWindowTimer = 0;
       this.launchFlashTimer = 0;
-      this.launchStatus = 'wait'; // 'wait' | 'early' | 'go' | 'perfect' | 'wheelspin' | 'slow'
+      this.launchStatus = 'wait';
 
       this.raceElapsed = 0;
       this.paused = false;
 
-      // Reusable scratch objects (zero GC allocations per frame)
+      // Reusable scratch objects (ZERO GC allocations per frame inside requestAnimationFrame)
       this._dummy = new THREE.Object3D();
       this._tmpPos = new THREE.Vector3();
       this._tmpVel = new THREE.Vector3();
       this._tmpRight = new THREE.Vector3();
+      this._tmpQuat = new THREE.Quaternion();
       this._tmpCol = new THREE.Color();
       this._up = new THREE.Vector3(0, 1, 0);
+      this._sampleA = createSampleStruct();
+      this._sampleB = createSampleStruct();
+      this._sampleC = createSampleStruct();
+      this._proj = createSampleStruct();
+      this._perfScratch = {
+        maxSpeed: 0, engineForce: 0, brakeForce: 0, steerPower: 0,
+        turboSpeedMult: 0, turboRecharge: 0, aggression: 0, consistency: 0,
+        technique: 0, charisma: 0, cornerPushFactor: 0, cornerSpeedCap: 0,
+        effectiveWetPenalty: 0, tireScrubFactor: 0
+      };
+      this._hudSnapshot = {
+        phase: 'countdown',
+        launchProgress: 0,
+        launchStatus: 'wait',
+        launchFlashActive: false,
+        wheelspinActive: false,
+        launchBoostActive: false,
+        position: 1, totalRacers: 22,
+        lap: 1, totalLaps: totalLaps,
+        kmh: 0, gear: 1, speedRatio: 0,
+        turbo: 50, turboActive: false,
+        moral: 25, moralMultiplier: 1, moralOverdrive: false,
+        raceElapsed: 0, crowdExcitement: 0.3,
+        playerPos: null, playerForward: null, playerHeading: 0,
+        playerDriver: null, racers: this.racers
+      };
 
       this._initParticlePools();
       this._spawnGrid();
     }
 
     // ========================================================================
-    // 4. LIGHTWEIGHT POOLED PARTICLE SYSTEM (SPARKS, BACKFIRE, TIRE SMOKE)
+    // LIGHTWEIGHT POOLED PARTICLE SYSTEM (SPARKS, BACKFIRE, TIRE SMOKE)
     // ========================================================================
     _initParticlePools() {
       const zeroMat = new THREE.Matrix4().makeScale(0, 0, 0);
 
-      // 1. Floor, kerb & collision sparks (orange-gold, gravity + asphalt bounce)
       const sparkCount = 140;
       const sparkGeo = new THREE.BoxGeometry(0.085, 0.085, 0.42);
       const sparkMat = new THREE.MeshBasicMaterial({ color: '#FFFFFF' });
@@ -78,7 +119,6 @@
       this.sparkCursor = 0;
       this.root.add(this.sparkMesh);
 
-      // 2. Exhaust backfire flames (blue/orange pops on downshift & turbo/launch)
       const fireCount = 48;
       const fireGeo = new THREE.SphereGeometry(0.24, 7, 6);
       const fireMat = new THREE.MeshBasicMaterial({ color: '#FFFFFF', transparent: true, opacity: 0.92, depthWrite: false });
@@ -96,7 +136,6 @@
       this.fireCursor = 0;
       this.root.add(this.fireMesh);
 
-      // 3. Tire smoke & wet spray (white/grayish expanding clouds behind rear wheels)
       const isWet = this.circuitMeta.rainIntensity > 0;
       const smokeCount = 120;
       const smokeGeo = new THREE.SphereGeometry(isWet ? 0.30 : 0.29, 7, 6);
@@ -147,8 +186,7 @@
         p.active = true;
         p.life = 0;
         p.maxLife = 0.14 + Math.random() * 0.08;
-        p.pos.copy(racer.worldPos)
-          .addScaledVector(racer.worldForward, -2.02 - i * 0.22);
+        p.pos.copy(racer.worldPos).addScaledVector(racer.worldForward, -2.02 - i * 0.22);
         p.pos.y = 0.58 + (Math.random() - 0.5) * 0.07;
         p.vel.copy(racer.worldForward).multiplyScalar(-11 - Math.random() * 6);
         p.vel.y = (Math.random() - 0.5) * 1.1;
@@ -202,6 +240,7 @@
       }
 
       const halfW = this.track.halfWidth;
+      const sTmp = this._sampleA;
 
       sorted.forEach((driver, gridIdx) => {
         const team = getTeamById(driver.teamId);
@@ -214,11 +253,19 @@
         const startS = -8 - row * 7.2 - (col === 1 ? 2.6 : 0);
         const startD = col * Math.min(halfW * 0.42, 3.2);
 
+        this.track.sampleAtDistanceInto(startS, sTmp);
+        const startHeading = Math.atan2(sTmp.tangent.x, sTmp.tangent.z);
+        const worldPos = new THREE.Vector3().copy(sTmp.pos).addScaledVector(sTmp.right, startD);
+        worldPos.y = 0.08;
+        const worldForward = new THREE.Vector3(Math.sin(startHeading), 0, Math.cos(startHeading));
+
         const isTopSix = gridIdx < 6;
         const racer = {
           driver, team, isPlayer, visual: carVisual,
           gridIdx,
           s: startS, lap: 1, d: startD, v: 0, prevV: 0,
+          heading: startHeading,
+          angularVel: 0,
           longitudinalAccel: 0, lateralVel: 0,
           steerInputSmooth: 0, steerVisual: 0, yawOffset: 0,
           pitchVisual: 0, rollVisual: 0,
@@ -236,8 +283,8 @@
           wheelSpin: 0,
           position: gridIdx + 1, prevPosition: gridIdx + 1,
           finished: false, finishTime: 0,
-          worldPos: new THREE.Vector3(),
-          worldForward: new THREE.Vector3(0, 0, 1),
+          worldPos,
+          worldForward,
           aiTargetD: startD,
           aiLaneTimer: 0.55 + Math.random() * 0.9,
           aiReactionDelay: isTopSix ? (0.01 + Math.random() * 0.03) : (0.06 + Math.random() * 0.14),
@@ -248,12 +295,13 @@
 
         this._syncCarTransform(racer, 0);
         this.racers.push(racer);
+        this._orderedRacers.push(racer);
         if (isPlayer) this.player = racer;
       });
     }
 
     // ========================================================================
-    // 1. PERFORMANCE MODEL (~15% CALMER TOP SPEED + REAL MASS/INERTIA)
+    // 3. PERFORMANCE MODEL (-20% CALMER TOP SPEED + STRONGER HAIRPIN BRAKING)
     // ========================================================================
     _computePerformance(racer, curvatureAbs) {
       const s = racer.driver.stats;
@@ -271,11 +319,12 @@
       const neu = Math.min(120, (s.neumaticos ?? s.turbo ?? 85) * m);
 
       const teamSpeedFactor = 0.89 + (teamRating / 100) * 0.15;
-      // Base world-space top speed reduced ~15% vs v1.1 for tactical corner reading
-      const maxSpeed = (70 + (vel - 70) * 0.37) * teamSpeedFactor;
-      const engineForce = (22500 + (ace - 70) * 290) * teamSpeedFactor; // Newtons
-      const brakeForce = 42500 + (fre - 70) * 480; // Newtons
-      const steerPower = 15.6 + (crv - 70) * 0.21;
+      // Parche v1.4: -20% additional base top speed reduction vs v1.3 (70 -> 56) for calm tactical corner reading
+      const maxSpeed = (56 + (vel - 70) * 0.296) * teamSpeedFactor;
+      const engineForce = (19500 + (ace - 70) * 245) * teamSpeedFactor; // Newtons
+      // Parche v1.4: Enhanced hairpin braking authority matched to 100m/50m braking boards
+      const brakeForce = 48500 + (fre - 70) * 480; // Newtons
+      const steerPower = 13.8 + (crv - 70) * 0.18;
       const turboSpeedMult = 1.18 + ((tec * 0.55 + neu * 0.45) - 70) * 0.0032;
       const turboRecharge = 5.2 + (neu - 70) * 0.13;
 
@@ -285,19 +334,30 @@
       const cornerSkillBonus = Math.max(0, (crv - 70) / 30);
       const effectiveWetPenalty = Math.max(0.015, wetPenaltyBase * (1 - techGripBonus * 0.65));
 
-      const cornerPushFactor = Math.max(0.35, (1.20 + effectiveWetPenalty * 2.3) - (techGripBonus * 0.28 + tireGripBonus * 0.20));
-      const cornerSpeedCap = maxSpeed * Math.max(0.48, 1.0 - curvatureAbs * (0.37 - (cornerSkillBonus * 0.08 + tireGripBonus * 0.05) + effectiveWetPenalty * 0.48));
+      const cornerPushFactor = Math.max(0.35, (1.16 + effectiveWetPenalty * 2.1) - (techGripBonus * 0.26 + tireGripBonus * 0.18));
+      const cornerSpeedCap = maxSpeed * Math.max(0.45, 1.0 - curvatureAbs * (0.40 - (cornerSkillBonus * 0.08 + tireGripBonus * 0.05) + effectiveWetPenalty * 0.48));
       const tireScrubFactor = Math.max(0.64, 1.15 - tireGripBonus * 0.34);
 
-      return {
-        maxSpeed, engineForce, brakeForce, steerPower, turboSpeedMult, turboRecharge,
-        aggression: con, consistency: con, technique: tec, charisma: car,
-        cornerPushFactor, cornerSpeedCap, effectiveWetPenalty, tireScrubFactor
-      };
+      const p = this._perfScratch;
+      p.maxSpeed = maxSpeed;
+      p.engineForce = engineForce;
+      p.brakeForce = brakeForce;
+      p.steerPower = steerPower;
+      p.turboSpeedMult = turboSpeedMult;
+      p.turboRecharge = turboRecharge;
+      p.aggression = con;
+      p.consistency = con;
+      p.technique = tec;
+      p.charisma = car;
+      p.cornerPushFactor = cornerPushFactor;
+      p.cornerSpeedCap = cornerSpeedCap;
+      p.effectiveWetPenalty = effectiveWetPenalty;
+      p.tireScrubFactor = tireScrubFactor;
+      return p;
     }
 
     // ========================================================================
-    // MAIN SIMULATION UPDATE
+    // MAIN SIMULATION UPDATE (SAFE DT CLAMPED <= 0.05s, ZERO GC)
     // ========================================================================
     update(dt, input) {
       const AudioFX = global.AudioFX;
@@ -305,7 +365,7 @@
         AudioFX.updateEngine(0, false, true);
         return;
       }
-      const clampedDt = Math.min(dt, 0.05);
+      const clampedDt = Math.min(Math.max(dt, 0), 0.05);
       if (this.launchFlashTimer > 0) this.launchFlashTimer = Math.max(0, this.launchFlashTimer - clampedDt);
 
       if (this.phase === 'countdown') {
@@ -323,9 +383,8 @@
           if (manualAccel) {
             this.playerLaunchResolved = true;
             if (this.launchWindowTimer <= 0.15) {
-              // PERFECT LAUNCH (150ms precision window)!
               this.player.launchBoostTimer = 1.35;
-              this.player.v = Math.max(this.player.v, 21);
+              this.player.v = Math.max(this.player.v, 17.5);
               this.player.turbo = Math.min(100, this.player.turbo + 16);
               this.player.moral = Math.min(100, this.player.moral + 12);
               this.launchFlashTimer = 0.50;
@@ -356,7 +415,7 @@
         r.longitudinalAccel = (r.v - r.prevV) / Math.max(0.001, clampedDt);
       }
 
-      // 2 solver passes prevent any car from ever clipping through rivals even in dense Lap 1 packs
+      // 2 rigid-body passes prevent clipping through rivals
       this._resolveCarInteractions(clampedDt, true);
       this._resolveCarInteractions(clampedDt, false);
       this._updateStandings();
@@ -368,14 +427,14 @@
       this._updateParticles(clampedDt);
 
       if (this.phase === 'racing') {
-        AudioFX.updateEngine(this.player.v / 88, this.player.turboActive || this.player.launchBoostTimer > 0, false);
+        AudioFX.updateEngine(this.player.v / 68, this.player.turboActive || this.player.launchBoostTimer > 0, false);
       } else {
         AudioFX.updateEngine(0, false, true);
       }
     }
 
     // ========================================================================
-    // 2. MARIO KART / F1 5-LIGHT START MINIGAME (150ms WINDOW + FAST TOP-6)
+    // 5-LIGHT START MINIGAME (150ms WINDOW + FAST TOP-6 LAUNCH)
     // ========================================================================
     _updateCountdown(dt, input) {
       const AudioFX = global.AudioFX;
@@ -402,7 +461,7 @@
         this.launchStatus = 'wait';
       }
 
-      this.racers.forEach(r => this._syncCarTransform(r, dt));
+      for (let i = 0; i < this.racers.length; i++) this._syncCarTransform(this.racers[i], dt);
       AudioFX.updateEngine(manualAccel ? 0.38 : 0.09, false, false);
 
       if (this.countdownTimer >= this.lightsOutTime && !this.lightsOutTriggered) {
@@ -413,29 +472,28 @@
         this.phase = 'racing';
         this.launchStatus = 'go';
 
-        // Top 6 grid rivals execute ultra-fast starts by default so Turn 1 must be earned!
-        this.racers.forEach(r => {
+        // Top 6 grid rivals execute fast launches by default
+        for (let i = 0; i < this.racers.length; i++) {
+          const r = this.racers[i];
           if (!r.isPlayer && r.gridIdx < 6) {
             r.launchBoostTimer = 1.25;
-            r.v = 18 + (6 - r.gridIdx) * 0.7;
+            r.v = 14.5 + (6 - r.gridIdx) * 0.55;
             this._emitBackfire(r, true);
           }
-        });
+        }
 
         if (this.playerPressedEarly && manualAccel) {
-          // FALSE START -> WHEELSPIN PENALTY FOR 1.5s WITH DENSE SMOKE
           this.playerLaunchResolved = true;
           this.player.wheelspinTimer = 1.5;
-          this.player.v = 5.5;
+          this.player.v = 4.5;
           this.launchStatus = 'wheelspin';
           this._emitTireSmoke(this.player, 1.6, 4);
           AudioFX.playBump('start_wheelspin');
           this.callbacks.onToast?.('💨 ¡PATINAJE DE RUEDAS!', '#EF4444');
         } else if (manualAccel) {
-          // Hit throttle on exact frame of lights out -> PERFECT LAUNCH!
           this.playerLaunchResolved = true;
           this.player.launchBoostTimer = 1.35;
-          this.player.v = 21;
+          this.player.v = 17.5;
           this.player.turbo = Math.min(100, this.player.turbo + 16);
           this.player.moral = Math.min(100, this.player.moral + 12);
           this.launchFlashTimer = 0.50;
@@ -448,15 +506,15 @@
     }
 
     // ========================================================================
-    // 1. PLAYER PHYSICS (MASS, INERTIA, PROGRESSIVE STEERING & UNDERSTEER)
+    // 1. 100% MANUAL PLAYER PHYSICS (TRUE WORLD HEADING, ZERO AUTO-STEERING!)
     // ========================================================================
     _updatePlayer(r, dt, input) {
       const AudioFX = global.AudioFX;
-      const sample = this.track.sampleAtDistance(r.s);
-      const curvAbs = Math.abs(sample.curvature);
+      const proj = this.track.projectPointNearS(r.worldPos.x, r.worldPos.z, r.s, this._proj);
+      const curvAbs = Math.abs(proj.curvature);
       const perf = this._computePerformance(r, curvAbs);
 
-      this._updateMoralSystem(r, dt, sample.hasGrandstand, perf.charisma);
+      this._updateMoralSystem(r, dt, proj.hasGrandstand, perf.charisma);
 
       // Launch penalty / boost timers
       if (r.wheelspinTimer > 0) {
@@ -468,7 +526,7 @@
         if (Math.random() < 0.35) this._emitBackfire(r, true);
       }
 
-      // Turbo / DRS activation (brief sound on engagement + soft blow-off valve on release)
+      // Turbo / ERS activation
       const wantsTurbo = input.turbo && r.turbo > 8 && r.wheelspinTimer <= 0;
       if (wantsTurbo && !r.turboActive && r.turbo >= 22) {
         r.turboActive = true;
@@ -486,104 +544,135 @@
           AudioFX.playTurboBlowOff();
         }
       } else {
-        const speedBonus = (r.v > 38 ? 1.12 : 0.68);
+        const speedBonus = (r.v > 30 ? 1.12 : 0.68);
         r.turbo = Math.min(100, r.turbo + perf.turboRecharge * speedBonus * dt);
       }
 
-      // Wait until player presses accel (or launch window closes) before autoAccel kicks in
       const effectiveAccelInput = this.playerLaunchResolved ? input.accel : (input.manualAccel ?? input.accel);
-
-      // Soft turbo blow-off valve when lifting off full throttle at high speed
-      if (r.prevAccel && !effectiveAccelInput && r.v > 48) {
+      if (r.prevAccel && !effectiveAccelInput && r.v > 38) {
         AudioFX.playTurboBlowOff();
       }
       r.prevAccel = !!effectiveAccelInput;
       r.prevTurboActive = r.turboActive;
 
-      // --- LONGITUDINAL DYNAMICS WITH REAL MASS & AERODYNAMIC DRAG ---
-      const launchMult = r.wheelspinTimer > 0 ? 0.36 : (r.launchBoostTimer > 0 ? 1.55 : 1.0);
-      const effectiveMax = perf.maxSpeed * (r.turboActive ? perf.turboSpeedMult : 1.0) * (r.wheelspinTimer > 0 ? 0.52 : 1.0);
-      const dragAccel = (r.v * r.v) * 0.0022 + r.v * 0.055;
+      // --- 100% MANUAL STEERING INPUT (EXCLUSIVELY PLAYER INPUT, SMOOTH RETURN-TO-CENTER) ---
+      const rawSteer = (input.right ? 1 : 0) - (input.left ? 1 : 0);
+      const steerRate = rawSteer !== 0 ? 8.5 : 11.2;
+      const steerAlpha = 1 - Math.exp(-dt * steerRate);
+      r.steerInputSmooth += (rawSteer - r.steerInputSmooth) * steerAlpha;
+      if (rawSteer === 0 && Math.abs(r.steerInputSmooth) < 0.002) r.steerInputSmooth = 0;
 
-      let netAccel = -dragAccel;
+      const visAlpha = 1 - Math.exp(-dt * 12.0);
+      r.steerVisual += (r.steerInputSmooth - r.steerVisual) * visAlpha;
+
+      // Clean progressive non-linear steering curve (surgical on straights, decisive in hairpins)
+      const absSteer = Math.abs(r.steerInputSmooth);
+      const shapedSteer = Math.sign(r.steerInputSmooth) * (absSteer * 0.68 + absSteer * absSteer * 0.32);
+
+      // --- LONGITUDINAL DYNAMICS: CALMER TOP SPEED, STRONG HAIRPIN BRAKING & STEERING DRAG ---
+      const launchMult = r.wheelspinTimer > 0 ? 0.36 : (r.launchBoostTimer > 0 ? 1.52 : 1.0);
+      const effectiveMax = perf.maxSpeed * (r.turboActive ? perf.turboSpeedMult : 1.0) * (r.wheelspinTimer > 0 ? 0.52 : 1.0);
+
+      // Base aero/rolling drag + cornering steering scrub drag at high lock (slows car cleanly in hairpins!)
+      const aeroDrag = (r.v * r.v) * 0.0028 + r.v * 0.055;
+      const steeringDrag = absSteer * absSteer * (r.v * 0.44 + (r.v * r.v) * 0.0056) * perf.tireScrubFactor;
+
+      let netAccel = -(aeroDrag + steeringDrag);
       if (effectiveAccelInput || r.turboActive) {
-        const lowEndTorque = r.v < 26 ? 1.28 : 1.0;
-        const thrust = (perf.engineForce / CAR_MASS) * (r.turboActive ? 1.50 : 1.0) * launchMult * lowEndTorque;
+        const lowEndTorque = r.v < 22 ? 1.32 : 1.0;
+        const thrust = (perf.engineForce / CAR_MASS) * (r.turboActive ? 1.48 : 1.0) * launchMult * lowEndTorque;
         netAccel += thrust;
       }
       if (input.brake) {
         netAccel -= (perf.brakeForce / CAR_MASS);
-        if (r.v > 30 && Math.random() < 0.54) {
-          this._emitTireSmoke(r, 0.96, 1);
+        if (r.v > 22 && Math.random() < 0.52) {
+          this._emitTireSmoke(r, 0.92, 1);
         }
       }
 
       r.v = THREE.MathUtils.clamp(r.v + netAccel * dt, 0, effectiveMax * 1.06);
       if (r.v > effectiveMax && !r.turboActive) {
-        r.v = THREE.MathUtils.lerp(r.v, effectiveMax, dt * 2.4);
+        r.v += (effectiveMax - r.v) * (1 - Math.exp(-dt * 2.6));
       }
 
       // Detect gear downshifts under heavy braking -> emit exhaust backfire!
       const kmh = Math.round(r.v * SPEED_DISPLAY_SCALE);
       const currentGear = Math.min(8, Math.max(1, Math.floor(kmh / 42) + 1));
-      if (currentGear < r.prevGear && input.brake && r.v > 20) {
+      if (currentGear < r.prevGear && input.brake && r.v > 16) {
         this._emitBackfire(r, false);
       }
       r.prevGear = currentGear;
 
-      // Corner overspeed scrub
-      const overspeedRatio = Math.max(0, (r.v - perf.cornerSpeedCap) / Math.max(1, perf.cornerSpeedCap));
-      if (curvAbs > 0.22 && overspeedRatio > 0 && !r.turboActive) {
-        const scrub = (r.v - perf.cornerSpeedCap) * (1.05 + perf.effectiveWetPenalty * 2.2) * perf.tireScrubFactor;
-        r.v = Math.max(perf.cornerSpeedCap * 0.82, r.v - scrub * dt);
-      }
-
-      // --- PROGRESSIVE SPEED-SENSITIVE STEERING & UNDERSTEER (SUBVIRAJE) ---
-      const rawSteer = (input.right ? 1 : 0) - (input.left ? 1 : 0);
-      r.steerInputSmooth = THREE.MathUtils.lerp(r.steerInputSmooth, rawSteer, dt * 7.2);
-      r.steerVisual = THREE.MathUtils.lerp(r.steerVisual, r.steerInputSmooth, dt * 10);
-
+      // --- TRUE BICYCLE KINEMATIC HEADING UPDATE (CAR GOES WHERE FRONT WHEELS POINT!) ---
       const speedFrac = THREE.MathUtils.clamp(r.v / Math.max(1, perf.maxSpeed), 0, 1.15);
-      const speedSensitivity = THREE.MathUtils.lerp(1.0, 0.54, Math.min(1, speedFrac * speedFrac));
-      const lowSpeedScale = THREE.MathUtils.clamp(r.v / 22, 0.18, 1.0);
+      // Agile max wheel angle at hairpin speeds (0.37 rad), steady & planted at top speed (0.115 rad)
+      const statAgility = 0.94 + ((r.driver.stats.maniobrabilidad ?? 85) - 70) * 0.0042;
+      const wetGrip = 1.0 - perf.effectiveWetPenalty * 0.42;
+      const brakeTurnIn = (input.brake && r.v > 14) ? 1.14 : 1.0;
+      const maxWheelAngle = THREE.MathUtils.lerp(0.37, 0.115, Math.pow(Math.min(1, speedFrac), 1.35))
+        * statAgility * wetGrip * brakeTurnIn;
 
-      const brakeTurnBonus = input.brake && r.v > 20 ? 1.14 : 1.0;
-      const understeerGrip = (curvAbs > 0.20 && !input.brake)
-        ? THREE.MathUtils.clamp(1.0 - overspeedRatio * 1.28, 0.28, 1.0)
-        : 1.0;
+      const frontWheelAngle = shapedSteer * maxWheelAngle;
+      // Only turns when moving & steering — ZERO spline auto-alignment or auto-centering!
+      const rawOmega = r.v > 0.35 ? (r.v / WHEELBASE) * Math.tan(frontWheelAngle) : 0;
+      r.angularVel = THREE.MathUtils.clamp(rawOmega, -2.05, 2.05);
+      r.heading -= r.angularVel * dt;
 
-      const targetLatVel = r.steerInputSmooth * perf.steerPower * speedSensitivity * lowSpeedScale * brakeTurnBonus * understeerGrip;
-      const outwardPush = -sample.curvature * speedFrac * speedFrac * 15.6 * perf.cornerPushFactor * (1 + overspeedRatio * 1.38);
+      // Advance car strictly along its own front-wheel heading vector
+      r.worldForward.set(Math.sin(r.heading), 0, Math.cos(r.heading));
+      r.worldPos.x += r.worldForward.x * r.v * dt;
+      r.worldPos.z += r.worldForward.z * r.v * dt;
+      r.worldPos.y = 0.08;
 
-      const latGripRate = this.circuitMeta.rainIntensity > 0 ? 3.8 + (perf.technique - 70) * 0.06 : 5.4;
-      r.lateralVel = THREE.MathUtils.lerp(r.lateralVel, targetLatVel + outwardPush, dt * latGripRate);
-      r.d += r.lateralVel * dt;
+      // Project updated world position onto circuit spline for telemetry, barriers, AI & lap counting
+      const prevLap = r.lap;
+      const prevD = r.d;
+      const nextProj = this.track.projectPointNearS(r.worldPos.x, r.worldPos.z, r.s, this._proj);
+      r.s = nextProj.s;
+      r.d = nextProj.d;
+      r.lateralVel = dt > 0.0001 ? THREE.MathUtils.clamp((r.d - prevD) / dt, -14, 14) : 0;
 
-      // Kerb riding sparks + wide grass/gravel drift tire smoke
+      // Kerb riding sparks + tire smoke
       const kerbEdge = this.track.halfWidth - 1.95;
-      if (Math.abs(r.d) > kerbEdge && r.v > 22) {
-        if (Math.random() < 0.48) {
+      if (Math.abs(r.d) > kerbEdge && r.v > 18) {
+        if (Math.random() < 0.46) {
           this._tmpPos.copy(r.worldPos);
           this._tmpPos.y = 0.14;
-          this._emitSparkBurst(this._tmpPos, r.worldForward, 2, 5.5);
+          this._emitSparkBurst(this._tmpPos, r.worldForward, 2, 5.2);
         }
-        if (Math.random() < 0.42) this._emitTireSmoke(r, 0.9, 1);
+        if (Math.random() < 0.40) this._emitTireSmoke(r, 0.88, 1);
       }
 
-      // High-speed aerodynamic floor bottoming sparks at end of straights
-      if (r.v > perf.maxSpeed * 0.88 && curvAbs < 0.16 && Math.random() < 0.36) {
+      // High-speed floor bottoming sparks
+      if (r.v > perf.maxSpeed * 0.88 && curvAbs < 0.16 && Math.random() < 0.32) {
         this._tmpPos.copy(r.worldPos).addScaledVector(r.worldForward, -1.6);
         this._tmpPos.y = 0.13;
-        this._emitSparkBurst(this._tmpPos, r.worldForward, 2, 4.2);
+        this._emitSparkBurst(this._tmpPos, r.worldForward, 2, 4.0);
       }
 
-      // Barrier containment with collision sparks & debounced carbon impact
+      // Physical barrier containment (ONLY triggers when actually touching the track wall!)
       const maxD = this.track.halfWidth - 1.25;
       if (Math.abs(r.d) > maxD) {
         const sign = Math.sign(r.d);
         r.d = sign * maxD;
-        r.lateralVel *= -0.22;
-        const wallRetain = THREE.MathUtils.clamp(0.945 + (perf.consistency - 70) * 0.0005, 0.935, 0.968);
+        r.worldPos.set(
+          nextProj.pos.x + nextProj.right.x * r.d,
+          0.08,
+          nextProj.pos.z + nextProj.right.z * r.d
+        );
+
+        // Deflect heading ONLY along the wall face if nose is pushing outward into the barrier
+        const outwardDot = r.worldForward.x * nextProj.right.x * sign + r.worldForward.z * nextProj.right.z * sign;
+        if (outwardDot > 0.02) {
+          const wallTangentYaw = Math.atan2(nextProj.tangent.x, nextProj.tangent.z);
+          let diff = wallTangentYaw - r.heading;
+          while (diff > Math.PI) diff -= Math.PI * 2;
+          while (diff < -Math.PI) diff += Math.PI * 2;
+          r.heading += diff * Math.min(0.65, outwardDot * 0.95);
+          r.worldForward.set(Math.sin(r.heading), 0, Math.cos(r.heading));
+        }
+
+        const wallRetain = THREE.MathUtils.clamp(0.92 + (perf.consistency - 70) * 0.0005, 0.90, 0.955);
         r.v *= wallRetain;
         r.bobbleVelZ -= sign * 7.5;
         this._tmpPos.copy(r.worldPos);
@@ -593,8 +682,6 @@
       }
 
       // Lap progression
-      const prevLap = r.lap;
-      r.s += r.v * dt;
       const newLap = Math.floor(Math.max(0, r.s) / this.track.totalLength) + 1;
       if (newLap > prevLap && r.s > 10) {
         r.lap = newLap;
@@ -610,11 +697,11 @@
       }
 
       // Rain spray when wet
-      if (this.circuitMeta.rainIntensity > 0 && r.v > 30 && Math.random() < 0.55) {
-        this._emitTireSmoke(r, 0.9, 1);
+      if (this.circuitMeta.rainIntensity > 0 && r.v > 24 && Math.random() < 0.55) {
+        this._emitTireSmoke(r, 0.88, 1);
       }
 
-      r.bobbleVelZ += (-r.steerInputSmooth * 10 - sample.curvature * 4.5) * dt;
+      r.bobbleVelZ += (-r.steerInputSmooth * 10 - r.angularVel * 3.5) * dt;
       if (r.turboActive) r.bobbleVelX -= 12 * dt;
     }
 
@@ -629,9 +716,9 @@
         if (Math.random() < 0.25) this._emitBackfire(r, true);
       }
 
-      const sample = this.track.sampleAtDistance(r.s);
-      const lookAhead = this.track.sampleAtDistance(r.s + 24);
-      const lookFar = this.track.sampleAtDistance(r.s + 46);
+      const sample = this.track.sampleAtDistanceInto(r.s, this._sampleA);
+      const lookAhead = this.track.sampleAtDistanceInto(r.s + 24, this._sampleB);
+      const lookFar = this.track.sampleAtDistanceInto(r.s + 46, this._sampleC);
       const curvNow = Math.abs(sample.curvature);
       const curvAhead = Math.abs(lookAhead.curvature);
       const curvAbs = Math.max(curvNow, curvAhead * 0.92);
@@ -639,14 +726,13 @@
 
       this._updateMoralSystem(r, dt, sample.hasGrandstand, perf.charisma * 0.82);
 
-      // Minimal rubber-banding so front-runners stay genuinely hard to catch
+      // Minimal rubber-banding so front-runners stay genuinely competitive
       const distToPlayer = r.s - this.player.s;
       let rubber = 1.0;
-      if (distToPlayer > 165) rubber = 0.97;
-      else if (distToPlayer < -65) rubber = 1.06;
-      r.aiRubberBias = THREE.MathUtils.lerp(r.aiRubberBias, rubber, dt * 0.7);
+      if (distToPlayer > 155) rubber = 0.97;
+      else if (distToPlayer < -65) rubber = 1.05;
+      r.aiRubberBias += (rubber - r.aiRubberBias) * (1 - Math.exp(-dt * 0.7));
 
-      // Corner exit detection (coming out of slow/medium bend onto straight)
       const isCornerExit = curvNow > 0.15 && Math.abs(lookFar.curvature) < curvNow * 0.75;
 
       // Active AI ERS / Turbo deployment on slow-corner exits, main straights & duels
@@ -668,7 +754,7 @@
         r.turbo = Math.min(100, r.turbo + perf.turboRecharge * 0.96 * dt);
       }
 
-      // +15% cornering speed & corner-exit traction for demanding AI pace
+      // +15% cornering speed & exit traction scaled to the calmer v1.4 speed ceiling
       const exitBoost = isCornerExit ? 1.24 : 1.05;
       const techBonus = 1.0 + (perf.technique - 82) * 0.0028;
       const aiCornerCap = Math.min(perf.maxSpeed * 1.04, perf.cornerSpeedCap * 1.15);
@@ -676,7 +762,7 @@
       const desiredSpeed = baseCap * (r.turboActive ? perf.turboSpeedMult : 1.0) * (r.launchBoostTimer > 0 ? 1.12 : 1.0);
 
       const aiAccel = (perf.engineForce / CAR_MASS) * 1.15 * exitBoost * (r.launchBoostTimer > 0 ? 1.38 : 1.0);
-      const aiBrake = (perf.brakeForce / CAR_MASS) * 0.92;
+      const aiBrake = (perf.brakeForce / CAR_MASS) * 0.85;
       if (r.v < desiredSpeed) r.v = Math.min(desiredSpeed, r.v + aiAccel * dt);
       else r.v = Math.max(desiredSpeed, r.v - aiBrake * dt);
 
@@ -689,12 +775,11 @@
         r.aiDefend.activeTimer = Math.max(0, r.aiDefend.activeTimer - dt);
       }
 
-      // --- AGGRESSIVE POSITION DEFENSE (BLOCKING WHEN PLAYER IS < 18m BEHIND) ---
+      // Aggressive position defense (blocking when player is < 18m behind)
       let isBlockingPlayer = false;
       const dsBehind = r.s - this.player.s;
       if (!this.player.finished && dsBehind > 1.6 && dsBehind < 18.0 && Math.abs(this.player.d - r.d) < 6.0) {
-        if (!r.aiDefend.moveUsedOnStraight && (this.player.v >= r.v - 6 || dsBehind < 11.0)) {
-          // Read the side the player is trying to pass on and shut the door cleanly
+        if (!r.aiDefend.moveUsedOnStraight && (this.player.v >= r.v - 5 || dsBehind < 11.0)) {
           const predictedAttackD = this.player.d + this.player.lateralVel * 0.22;
           r.aiDefend.blockTargetD = THREE.MathUtils.clamp(predictedAttackD, -this.track.halfWidth + 1.85, this.track.halfWidth - 1.85);
           r.aiDefend.moveUsedOnStraight = true;
@@ -707,7 +792,6 @@
       }
 
       if (!isBlockingPlayer) {
-        // Inside-apex racing line (positive curvature bends toward +d)
         r.aiLaneTimer -= dt;
         if (r.aiLaneTimer <= 0) {
           r.aiLaneTimer = 0.55 + Math.random() * 0.85;
@@ -718,7 +802,6 @@
           r.aiTargetD = THREE.MathUtils.clamp(apexTarget, -this.track.halfWidth + 1.9, this.track.halfWidth - 1.9);
         }
 
-        // Overtake avoidance when closing on slower car ahead
         for (let j = 0; j < this.racers.length; j++) {
           const other = this.racers[j];
           if (other === r) continue;
@@ -734,9 +817,9 @@
 
       const diffD = r.aiTargetD - r.d;
       const steerCmd = THREE.MathUtils.clamp(diffD * (isBlockingPlayer ? 0.56 : 0.46), -1, 1);
-      r.steerVisual = THREE.MathUtils.lerp(r.steerVisual, steerCmd, dt * (isBlockingPlayer ? 9.5 : 7.8));
+      r.steerVisual += (steerCmd - r.steerVisual) * (1 - Math.exp(-dt * (isBlockingPlayer ? 9.5 : 7.8)));
       const latFactor = isBlockingPlayer ? 0.80 : 0.68;
-      r.lateralVel = THREE.MathUtils.lerp(r.lateralVel, steerCmd * (perf.steerPower * latFactor), dt * 6.8);
+      r.lateralVel += (steerCmd * (perf.steerPower * latFactor) - r.lateralVel) * (1 - Math.exp(-dt * 6.8));
       r.d = THREE.MathUtils.clamp(r.d + r.lateralVel * dt, -this.track.halfWidth + 1.4, this.track.halfWidth - 1.4);
 
       r.s += r.v * dt;
@@ -748,25 +831,23 @@
           r.finishTime = this.raceElapsed;
         }
       }
+      r.bobbleVelZ += (-r.steerVisual * 7 - sample.curvature * 3.5) * dt;
     }
 
     _updateMoralSystem(r, dt, nearGrandstand, charisma) {
       const AudioFX = global.AudioFX;
       if (r.moralOverdriveTimer > 0) {
-        r.moralOverdriveTimer -= dt;
-        r.moral = Math.max(0, (r.moralOverdriveTimer / 7.5) * 100);
+        r.moralOverdriveTimer = Math.max(0, r.moralOverdriveTimer - dt);
         r.moralMultiplier = 1.22;
-        if (r.moralOverdriveTimer <= 0) {
-          r.moralOverdriveTimer = 0; r.moral = 0; r.moralMultiplier = 1.0;
-        }
+        r.moral = (r.moralOverdriveTimer / 7.5) * 100;
+        if (r.moralOverdriveTimer <= 0) r.moralMultiplier = 1.0;
         return;
       }
 
-      const charismaFactor = 0.55 + ((charisma - 70) / 30) * 0.95;
-      const baseFill = (r.v > 36 ? 1.8 : 0.4) * charismaFactor;
-      const grandstandBonus = nearGrandstand ? 6.2 * charismaFactor : 0;
-
-      r.moral = Math.min(100, r.moral + (baseFill + grandstandBonus) * dt);
+      const charismaFactor = 0.65 + (charisma / 99) * 1.15;
+      const speedFactor = r.v > 28 ? 1.0 : 0.35;
+      const crowdGain = nearGrandstand ? 6.8 * charismaFactor * speedFactor : 0.65 * charismaFactor * speedFactor;
+      r.moral = Math.min(100, r.moral + crowdGain * dt);
       r.moralMultiplier = 1.0 + (r.moral / 100) * 0.10;
 
       if (r.isPlayer && nearGrandstand && Math.random() < dt * 0.55) AudioFX.playCrowdCheer();
@@ -783,11 +864,12 @@
     }
 
     // ========================================================================
-    // 3. SOLID RIGID CAR-TO-CAR COLLISIONS WITH 400ms AUDIO DEBOUNCE PER PAIR
+    // SOLID RIGID CAR-TO-CAR COLLISIONS WITH 400ms PER-PAIR AUDIO DEBOUNCE
     // ========================================================================
     _resolveCarInteractions(dt, emitFx = true) {
       const AudioFX = global.AudioFX;
       const maxD = this.track.halfWidth - 1.25;
+      let playerAdjusted = false;
 
       for (let i = 0; i < this.racers.length; i++) {
         const a = this.racers[i];
@@ -798,7 +880,6 @@
           const dd = a.d - b.d;
           const absD = Math.abs(dd);
 
-          // Rigid OBB / Capsule overlap test
           if (absS < CAR_LEN && absD < CAR_WID) {
             const ovS = CAR_LEN - absS;
             const ovD = CAR_WID - absD;
@@ -806,15 +887,16 @@
               ? `${a.driver.id}__${b.driver.id}`
               : `${b.driver.id}__${a.driver.id}`;
 
+            if (a.isPlayer || b.isPlayer) playerAdjusted = true;
+
             if (ovS < ovD * 1.15) {
-              // --- REAR-END IMPACT ---
               const leading = ds >= 0 ? a : b;
               const trailing = ds >= 0 ? b : a;
               const closingSpeed = Math.max(0, trailing.v - leading.v);
 
               trailing.s = leading.s - CAR_LEN - 0.03;
               trailing.v = Math.max(0, leading.v * 0.84 - closingSpeed * 0.35);
-              leading.v = Math.min(leading.v + Math.min(7.5, closingSpeed * 0.22), 92);
+              leading.v = Math.min(leading.v + Math.min(6.0, closingSpeed * 0.22), 76);
 
               if (emitFx && (a.isPlayer || b.isPlayer)) {
                 AudioFX.playBump(pairKey);
@@ -825,15 +907,14 @@
                 this._emitSparkBurst(this._tmpPos, trailing.worldForward, 8, 8.5);
               }
             } else {
-              // --- SIDE-BY-SIDE WHEEL-TO-WHEEL RUB ---
               const dir = dd >= 0 ? 1 : -1;
               const halfPush = ovD * 0.52;
               a.d = THREE.MathUtils.clamp(a.d + dir * halfPush, -maxD, maxD);
               b.d = THREE.MathUtils.clamp(b.d - dir * halfPush, -maxD, maxD);
 
               const avgLat = (a.lateralVel + b.lateralVel) * 0.5;
-              a.lateralVel = THREE.MathUtils.clamp(avgLat + dir * 3.2, -9.5, 9.5);
-              b.lateralVel = THREE.MathUtils.clamp(avgLat - dir * 3.2, -9.5, 9.5);
+              a.lateralVel = THREE.MathUtils.clamp(avgLat + dir * 3.0, -8.5, 8.5);
+              b.lateralVel = THREE.MathUtils.clamp(avgLat - dir * 3.0, -8.5, 8.5);
               a.v *= 0.988;
               b.v *= 0.988;
 
@@ -847,25 +928,35 @@
               }
             }
           } else if (emitFx && absS < 16 && absD < 2.1) {
-            // Slipstream draft behind rival
             const trailing = a.s < b.s ? a : b;
             trailing.turbo = Math.min(100, trailing.turbo + 6.0 * dt);
-            if (trailing.isPlayer) trailing.v = Math.min(trailing.v + 4.0 * dt, 102);
+            if (trailing.isPlayer) trailing.v = Math.min(trailing.v + 3.0 * dt, 76);
           }
         }
+      }
+
+      // Keep world-space player synced to collision push-out WITHOUT modifying manual heading!
+      if (playerAdjusted && this.player) {
+        const sOut = this.track.sampleAtDistanceInto(this.player.s, this._sampleA);
+        this.player.worldPos.set(
+          sOut.pos.x + sOut.right.x * this.player.d,
+          0.08,
+          sOut.pos.z + sOut.right.z * this.player.d
+        );
       }
     }
 
     _updateStandings() {
       const AudioFX = global.AudioFX;
-      const ordered = [...this.racers].sort((a, b) => {
+      this._orderedRacers.sort((a, b) => {
         if (a.finished && b.finished) return a.finishTime - b.finishTime;
         if (a.finished) return -1;
         if (b.finished) return 1;
         return b.s - a.s;
       });
 
-      ordered.forEach((r, idx) => {
+      for (let idx = 0; idx < this._orderedRacers.length; idx++) {
+        const r = this._orderedRacers[idx];
         r.prevPosition = r.position;
         r.position = idx + 1;
         if (r.isPlayer && this.phase === 'racing' && this.raceElapsed > 3.0 && r.position < r.prevPosition) {
@@ -876,45 +967,61 @@
           if (r.position === 1) this.callbacks.onToast?.('👑 ¡LÍDER DE CARRERA!', '#FFD43B');
           else this.callbacks.onToast?.(`🔥 ¡ADELANTAMIENTO! P${r.position}`, '#00F5D4');
         }
-      });
+      }
     }
 
     // ========================================================================
-    // SYNC 3D TRANSFORMS + DYNAMIC SUSPENSION (PITCH & ROLL) + STEERING IK
+    // SYNC 3D TRANSFORMS (ZERO GC, 100% MANUAL HEADING FOR PLAYER)
     // ========================================================================
     _syncCarTransform(r, dt) {
-      const sample = this.track.sampleAtDistance(r.s);
-      const pos = sample.pos.clone().addScaledVector(sample.right, r.d);
-      r.worldPos.copy(pos);
-      r.worldForward.copy(sample.tangent);
+      let curvForRoll = 0;
+      if (r.isPlayer && this.phase === 'racing') {
+        // Player position & yaw come strictly from true manual worldPos & heading!
+        r.visual.root.position.set(r.worldPos.x, 0.08, r.worldPos.z);
+        r.visual.root.rotation.y = r.heading;
+        curvForRoll = r.angularVel * 0.42;
+      } else {
+        const sample = this.track.sampleAtDistanceInto(r.s, this._sampleA);
+        r.worldPos.set(
+          sample.pos.x + sample.right.x * r.d,
+          0.08,
+          sample.pos.z + sample.right.z * r.d
+        );
+        r.worldForward.copy(sample.tangent);
+        r.visual.root.position.set(r.worldPos.x, 0.08, r.worldPos.z);
 
-      r.visual.root.position.set(pos.x, 0.08, pos.z);
-      const trackYaw = Math.atan2(sample.tangent.x, sample.tangent.z);
-      const targetYawOff = -r.steerVisual * 0.15 + sample.curvature * 0.055;
-      r.yawOffset = THREE.MathUtils.lerp(r.yawOffset, targetYawOff, Math.min(1, dt * 9 || 1));
-      r.visual.root.rotation.y = trackYaw + r.yawOffset;
+        const trackYaw = Math.atan2(sample.tangent.x, sample.tangent.z);
+        if (r.isPlayer) {
+          r.heading = trackYaw;
+          r.visual.root.rotation.y = trackYaw;
+        } else {
+          const targetYawOff = -r.steerVisual * 0.15 + sample.curvature * 0.055;
+          r.yawOffset += (targetYawOff - r.yawOffset) * (dt > 0 ? (1 - Math.exp(-dt * 9)) : 1);
+          r.heading = trackYaw + r.yawOffset;
+          r.visual.root.rotation.y = r.heading;
+        }
+        curvForRoll = sample.curvature;
+      }
 
-      // Dynamic Suspension Pitch (squat back on accel, nose dive forward on hard braking)
-      const accelPitch = THREE.MathUtils.clamp(-r.longitudinalAccel * 0.0022, -0.075, 0.095);
-      const turboPitch = (r.turboActive || r.launchBoostTimer > 0) ? -0.030 : 0;
+      // Dynamic Suspension Pitch & Roll (FPS-independent smoothing)
+      const accelPitch = THREE.MathUtils.clamp(-r.longitudinalAccel * 0.0024, -0.075, 0.095);
+      const turboPitch = (r.turboActive || r.launchBoostTimer > 0) ? -0.028 : 0;
       const targetPitch = accelPitch + turboPitch;
 
-      // Dynamic Suspension Roll (chassis leans toward the outside of tight corners)
-      const speedNorm = r.v / 78;
-      const lateralG = -r.steerVisual * speedNorm * 0.085 - sample.curvature * speedNorm * speedNorm * 0.068;
+      const speedNorm = r.v / 62;
+      const lateralG = -r.steerVisual * speedNorm * 0.095 - curvForRoll * speedNorm * 0.055;
       const targetRoll = THREE.MathUtils.clamp(lateralG, -0.14, 0.14);
 
-      const suspLerp = Math.min(1, (dt || 0.016) * 8.5);
-      r.pitchVisual = THREE.MathUtils.lerp(r.pitchVisual, targetPitch, suspLerp);
-      r.rollVisual = THREE.MathUtils.lerp(r.rollVisual, targetRoll, suspLerp);
+      const suspAlpha = dt > 0 ? (1 - Math.exp(-dt * 8.5)) : 1;
+      r.pitchVisual += (targetPitch - r.pitchVisual) * suspAlpha;
+      r.rollVisual += (targetRoll - r.rollVisual) * suspAlpha;
       r.visual.bodyTiltGroup.rotation.x = r.pitchVisual;
       r.visual.bodyTiltGroup.rotation.z = r.rollVisual;
 
-      r.wheelSpin += r.v * dt * 1.45;
+      r.wheelSpin += r.v * dt * 1.65;
       for (let i = 0; i < r.visual.wheels.length; i++) r.visual.wheels[i].rotation.x = r.wheelSpin;
       for (let i = 0; i < r.visual.frontSteerPivots.length; i++) r.visual.frontSteerPivots[i].rotation.y = -r.steerVisual * 0.42;
 
-      // Real-time steering wheel + articulated gloved arms IK
       if (r.visual.updateSteering) r.visual.updateSteering(r.steerVisual);
 
       if (dt > 0) {
@@ -943,12 +1050,11 @@
     }
 
     // ========================================================================
-    // UPDATE POOLED PARTICLES (SPARKS + ASPHALT BOUNCE, BACKFIRE, TIRE SMOKE)
+    // UPDATE POOLED PARTICLES (ZERO GC)
     // ========================================================================
     _updateParticles(dt) {
       const dummy = this._dummy;
 
-      // 1. Sparks with gravity + bounce off y = 0.09 asphalt
       let sparkDirty = false;
       for (let i = 0; i < this.sparks.length; i++) {
         const p = this.sparks[i];
@@ -978,7 +1084,6 @@
       }
       if (sparkDirty) this.sparkMesh.instanceMatrix.needsUpdate = true;
 
-      // 2. Exhaust backfire flames
       let fireDirty = false;
       for (let i = 0; i < this.fires.length; i++) {
         const p = this.fires[i];
@@ -1001,7 +1106,6 @@
       }
       if (fireDirty) this.fireMesh.instanceMatrix.needsUpdate = true;
 
-      // 3. Tire smoke clouds
       let smokeDirty = false;
       for (let i = 0; i < this.smokes.length; i++) {
         const p = this.smokes[i];
@@ -1038,7 +1142,7 @@
       this.racers.forEach(r => {
         if (!r.finished) {
           const remaining = Math.max(2, targetDist - r.s);
-          const estSpeed = Math.max(48, r.v || 68);
+          const estSpeed = Math.max(38, r.v || 54);
           r.finishTime = this.raceElapsed + remaining / estSpeed;
           r.finished = true;
         }
@@ -1065,23 +1169,33 @@
         ? THREE.MathUtils.clamp(this.countdownTimer / Math.max(0.1, this.lightsOutTime), 0, 1)
         : 1;
 
-      return {
-        phase: this.phase,
-        launchProgress,
-        launchStatus: this.launchStatus,
-        launchFlashActive: this.launchFlashTimer > 0,
-        wheelspinActive: p.wheelspinTimer > 0,
-        launchBoostActive: p.launchBoostTimer > 0,
-        position: p.position, totalRacers: this.racers.length,
-        lap: Math.min(p.lap, this.totalLaps), totalLaps: this.totalLaps,
-        kmh, gear, speedRatio: THREE.MathUtils.clamp(kmh / 340, 0, 1),
-        turbo: p.turbo, turboActive: p.turboActive || p.launchBoostTimer > 0,
-        moral: p.moral, moralMultiplier: p.moralMultiplier, moralOverdrive: p.moralOverdriveTimer > 0,
-        raceElapsed: this.raceElapsed, crowdExcitement,
-        playerPos: p.worldPos, playerForward: p.worldForward,
-        playerDriver: p.driver,
-        racers: this.racers
-      };
+      const snap = this._hudSnapshot;
+      snap.phase = this.phase;
+      snap.launchProgress = launchProgress;
+      snap.launchStatus = this.launchStatus;
+      snap.launchFlashActive = this.launchFlashTimer > 0;
+      snap.wheelspinActive = p.wheelspinTimer > 0;
+      snap.launchBoostActive = p.launchBoostTimer > 0;
+      snap.position = p.position;
+      snap.totalRacers = this.racers.length;
+      snap.lap = Math.min(p.lap, this.totalLaps);
+      snap.totalLaps = this.totalLaps;
+      snap.kmh = kmh;
+      snap.gear = gear;
+      snap.speedRatio = THREE.MathUtils.clamp(kmh / 335, 0, 1);
+      snap.turbo = p.turbo;
+      snap.turboActive = p.turboActive || p.launchBoostTimer > 0;
+      snap.moral = p.moral;
+      snap.moralMultiplier = p.moralMultiplier;
+      snap.moralOverdrive = p.moralOverdriveTimer > 0;
+      snap.raceElapsed = this.raceElapsed;
+      snap.crowdExcitement = crowdExcitement;
+      snap.playerPos = p.worldPos;
+      snap.playerForward = p.worldForward;
+      snap.playerHeading = p.heading;
+      snap.playerDriver = p.driver;
+      snap.racers = this.racers;
+      return snap;
     }
   }
 

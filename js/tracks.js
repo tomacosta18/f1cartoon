@@ -1,7 +1,10 @@
 // ============================================================================
-// TRACKS.JS — 3 Circuitos 3D Animados (Mónaco, Silverstone, Abu Dabi)
-//             Parche v1.1: Asfalto y=+0.08, polygonOffset, Opacidad Estricta,
-//             Escapatorias Opacas, Cero Z-Fighting ni Solapamientos
+// TRACKS.JS — Parche v1.4: 3 Circuitos 3D Enriquecidos y Optimizados (60 FPS)
+//             • Muestreo/Proyección Cero-GC (sampleAtDistanceInto, projectPointNearS)
+//             • Pianos 3D con Relieve, Barreras de Hormigón + Vallas Metálicas FIA
+//             • Protecciones Tecpro Rojas/Blancas, Carteles de Frenada (150/100/50m)
+//             • Marcas de Goma Oscura en Frenada, Edificio de Boxes (Pit Lane)
+//             • InstancedMesh Masivo para Gradas, Árboles, Postes y Vallas
 // ============================================================================
 (function (global) {
   'use strict';
@@ -23,6 +26,42 @@
       [-25, -195], [-85, -135], [-55, -60]
     ]
   };
+
+  // Sculpted 3D serrated rumble-strip kerb geometry (angled wedge with corrugated ribs)
+  function createReliefKerbGeometry() {
+    const geo = new THREE.BoxGeometry(1.52, 0.24, 3.25, 4, 2, 6);
+    const pos = geo.attributes.position;
+    for (let i = 0; i < pos.count; i++) {
+      const x = pos.getX(i); // -0.76 .. +0.76
+      let y = pos.getY(i);   // -0.12 .. +0.12
+      const z = pos.getZ(i); // -1.625 .. +1.625
+      if (y > 0) {
+        // Taper inner edge slightly lower + add 3D serrated rumble grooves along Z
+        const edgeSlope = (Math.abs(x) / 0.76) * 0.055;
+        const rumble = Math.sin((z / 3.25) * Math.PI * 6) * 0.022;
+        y += edgeSlope + rumble;
+      }
+      pos.setY(i, y);
+    }
+    geo.computeVertexNormals();
+    return geo;
+  }
+
+  // Interlocking beveled Tecpro foam barrier block geometry
+  function createTecproBlockGeometry() {
+    const geo = new THREE.BoxGeometry(1.15, 1.38, 2.85, 2, 2, 2);
+    const pos = geo.attributes.position;
+    for (let i = 0; i < pos.count; i++) {
+      let x = pos.getX(i);
+      const y = pos.getY(i);
+      const z = pos.getZ(i);
+      if (y > 0.3) x *= 0.86; // beveled top foam shoulder
+      if (Math.abs(y) < 0.2 && Math.abs(z) < 0.5) x *= 0.92; // center energy-absorption recess
+      pos.setX(i, x);
+    }
+    geo.computeVertexNormals();
+    return geo;
+  }
 
   function buildCircuitScene(circuitMeta) {
     const rawPts = CIRCUIT_CONTROL_POINTS[circuitMeta.id] || CIRCUIT_CONTROL_POINTS.monaco;
@@ -60,10 +99,15 @@
     const group = new THREE.Group();
     const animators = [];
 
+    // Identify heavy braking corners for 150m/100m/50m boards, braking rubber marks & Tecpro zones
+    const heavyCorners = detectHeavyBrakingCorners(frames, totalLength);
+
     const envInfo = buildEnvironmentBackdrop(circuitMeta, group, animators);
     buildTrackRibbon(frames, halfWidth, circuitMeta, group);
     const startLights = buildStartGantry(frames[0], trackWidth, circuitMeta, group);
-    buildAnimatedGrandstands(frames, halfWidth, circuitMeta, group, animators);
+    buildBrakingZonesAndTecpro(frames, heavyCorners, halfWidth, totalLength, circuitMeta, group);
+    buildPitLaneBuilding(frames, halfWidth, circuitMeta, group);
+    buildInstancedGrandstands(frames, halfWidth, circuitMeta, group, animators);
 
     if (circuitMeta.id === 'monaco') {
       buildMonacoLandmarks(frames, halfWidth, group, animators);
@@ -81,7 +125,8 @@
       if (f.pos.z > maxZ) maxZ = f.pos.z;
     });
 
-    function sampleAtDistance(s) {
+    // Zero-GC frame sampling into pre-allocated output struct
+    function sampleAtDistanceInto(s, out) {
       let wrapped = s % totalLength;
       if (wrapped < 0) wrapped += totalLength;
       const exactIdx = (wrapped / totalLength) * SAMPLES;
@@ -91,16 +136,88 @@
       const f0 = frames[i0];
       const f1 = frames[i1];
 
-      const pos = new THREE.Vector3().lerpVectors(f0.pos, f1.pos, frac);
-      const tangent = new THREE.Vector3().lerpVectors(f0.tangent, f1.tangent, frac).normalize();
-      const right = new THREE.Vector3().crossVectors(tangent, up).normalize();
-      const curvature = THREE.MathUtils.lerp(f0.curvature, f1.curvature, frac);
+      out.pos.lerpVectors(f0.pos, f1.pos, frac);
+      out.tangent.lerpVectors(f0.tangent, f1.tangent, frac).normalize();
+      out.right.crossVectors(out.tangent, up).normalize();
+      out.curvature = f0.curvature + (f1.curvature - f0.curvature) * frac;
+      out.width = trackWidth;
+      out.halfWidth = halfWidth;
+      out.hasGrandstand = f0.hasGrandstand || f1.hasGrandstand;
+      return out;
+    }
 
-      return {
-        pos, tangent, right, curvature,
-        width: trackWidth, halfWidth,
-        hasGrandstand: f0.hasGrandstand || f1.hasGrandstand
-      };
+    // Legacy compatibility wrapper for non-hot callers
+    function sampleAtDistance(s) {
+      return sampleAtDistanceInto(s, {
+        pos: new THREE.Vector3(),
+        tangent: new THREE.Vector3(),
+        right: new THREE.Vector3(),
+        curvature: 0,
+        width: trackWidth,
+        halfWidth,
+        hasGrandstand: false
+      });
+    }
+
+    // Zero-GC local projection from world (x, z) onto spline near hintS for 100% manual driving
+    function projectPointNearS(worldX, worldZ, hintS, out) {
+      let wrappedHint = hintS % totalLength;
+      if (wrappedHint < 0) wrappedHint += totalLength;
+      const centerIdx = Math.floor((wrappedHint / totalLength) * SAMPLES) % SAMPLES;
+
+      let bestDistSq = Infinity;
+      let bestI0 = centerIdx;
+      let bestT = 0;
+      let bestPx = 0;
+      let bestPz = 0;
+
+      for (let offset = -24; offset <= 24; offset++) {
+        const i0 = (centerIdx + offset + SAMPLES) % SAMPLES;
+        const i1 = (i0 + 1) % SAMPLES;
+        const a = frames[i0].pos;
+        const b = frames[i1].pos;
+        const abx = b.x - a.x;
+        const abz = b.z - a.z;
+        const lenSq = abx * abx + abz * abz;
+        let t = 0;
+        if (lenSq > 1e-6) {
+          t = ((worldX - a.x) * abx + (worldZ - a.z) * abz) / lenSq;
+          if (t < 0) t = 0;
+          else if (t > 1) t = 1;
+        }
+        const px = a.x + abx * t;
+        const pz = a.z + abz * t;
+        const dx = worldX - px;
+        const dz = worldZ - pz;
+        const distSq = dx * dx + dz * dz;
+        if (distSq < bestDistSq) {
+          bestDistSq = distSq;
+          bestI0 = i0;
+          bestT = t;
+          bestPx = px;
+          bestPz = pz;
+        }
+      }
+
+      const i1 = (bestI0 + 1) % SAMPLES;
+      const f0 = frames[bestI0];
+      const f1 = frames[i1];
+
+      out.pos.set(bestPx, 0, bestPz);
+      out.tangent.lerpVectors(f0.tangent, f1.tangent, bestT).normalize();
+      out.right.crossVectors(out.tangent, up).normalize();
+      out.curvature = f0.curvature + (f1.curvature - f0.curvature) * bestT;
+      out.width = trackWidth;
+      out.halfWidth = halfWidth;
+      out.hasGrandstand = f0.hasGrandstand || f1.hasGrandstand;
+
+      const sWrapped = ((bestI0 + bestT) / SAMPLES) * totalLength;
+      let delta = sWrapped - wrappedHint;
+      if (delta > totalLength * 0.5) delta -= totalLength;
+      else if (delta < -totalLength * 0.5) delta += totalLength;
+      out.s = hintS + delta;
+      out.d = (worldX - bestPx) * out.right.x + (worldZ - bestPz) * out.right.z;
+      return out;
     }
 
     function setStartLights(state) {
@@ -122,13 +239,16 @@
     }
 
     return {
-      group, circuitMeta, totalLength, trackWidth, halfWidth, frames,
+      group, circuitMeta, totalLength, trackWidth, halfWidth, frames, heavyCorners,
       bounds: { minX, maxX, minZ, maxZ },
       skyColor: envInfo.skyColor,
       fogColor: envInfo.fogColor,
+      fogDensity: envInfo.fogDensity,
       sunColor: envInfo.sunColor,
       ambientColor: envInfo.ambientColor,
       sampleAtDistance,
+      sampleAtDistanceInto,
+      projectPointNearS,
       setStartLights,
       update(dt, elapsed, crowdExcitement, playerPos) {
         for (let i = 0; i < animators.length; i++) {
@@ -138,16 +258,54 @@
     };
   }
 
+  // Detect major braking corners (spaced cleanly so 150m/100m/50m boards never clash)
+  function detectHeavyBrakingCorners(frames, totalLength) {
+    const N = frames.length;
+    const candidates = [];
+    for (let i = 10; i < N - 10; i++) {
+      const c = Math.abs(frames[i].curvature);
+      if (c < 0.42) continue;
+      let isPeak = true;
+      for (let k = -8; k <= 8; k++) {
+        if (k !== 0 && Math.abs(frames[(i + k + N) % N].curvature) > c) {
+          isPeak = false;
+          break;
+        }
+      }
+      if (isPeak) {
+        candidates.push({ idx: i, s: frames[i].s, curvature: frames[i].curvature, absCurv: c });
+      }
+    }
+    candidates.sort((a, b) => b.absCurv - a.absCurv);
+
+    const selected = [];
+    const minSep = Math.max(110, totalLength * 0.115);
+    for (let i = 0; i < candidates.length && selected.length < 5; i++) {
+      const cand = candidates[i];
+      const tooClose = selected.some(sel => {
+        const diff = Math.abs(sel.s - cand.s);
+        return Math.min(diff, totalLength - diff) < minSep;
+      });
+      if (!tooClose) selected.push(cand);
+    }
+    selected.sort((a, b) => a.s - b.s);
+    return selected;
+  }
+
   function buildEnvironmentBackdrop(circuitMeta, group, animators) {
     const { getToonMaterial, setTextureSRGB } = global.ToonMat;
-    let skyColor = '#56CCF2', fogColor = '#8DE0FF', groundColor = '#4ADE80', sunColor = '#FFFBEB', ambientColor = '#E0F2FE';
+    let skyColor = '#56CCF2', fogColor = '#93D8F8', fogDensity = 0.00105;
+    let groundColor = '#4ADE80', sunColor = '#FFFBEB', ambientColor = '#E0F2FE';
 
     if (circuitMeta.id === 'monaco') {
-      skyColor = '#38BDF8'; fogColor = '#93E4FF'; groundColor = '#C6B08E'; sunColor = '#FFF8DC'; ambientColor = '#E0F7FF';
+      skyColor = '#38BDF8'; fogColor = '#9ED8F6'; fogDensity = 0.0009;
+      groundColor = '#B49B74'; sunColor = '#FFF5D6'; ambientColor = '#D8F2FF';
     } else if (circuitMeta.id === 'silverstone') {
-      skyColor = '#6488A8'; fogColor = '#94B2CC'; groundColor = '#3DAE5C'; sunColor = '#E2F1FF'; ambientColor = '#B8D2E8';
+      skyColor = '#5E82A4'; fogColor = '#93B0CA'; fogDensity = 0.00145;
+      groundColor = '#369E52'; sunColor = '#E2F0FF'; ambientColor = '#BDD6EB';
     } else if (circuitMeta.id === 'abudhabi') {
-      skyColor = '#3B1D60'; fogColor = '#7A2E6F'; groundColor = '#E8B87D'; sunColor = '#FFB366'; ambientColor = '#C084FC';
+      skyColor = '#3B1D60'; fogColor = '#6E2E68'; fogDensity = 0.0012;
+      groundColor = '#D19A5E'; sunColor = '#FFB56B'; ambientColor = '#C084FC';
     }
 
     const groundMat = getToonMaterial(groundColor, {
@@ -158,14 +316,12 @@
       side: THREE.FrontSide
     });
 
-    // Ground strictly at y = 0.0 so track asphalt at y = +0.08 is strictly +0.08 above terrain.
-    // For Monaco & Abu Dhabi, split land cleanly at the seawall so ocean/marina NEVER overlaps terrain or asphalt.
     if (circuitMeta.id === 'monaco') {
       const landGeo = new THREE.PlaneGeometry(2600, 1500);
       landGeo.computeVertexNormals();
       const land = new THREE.Mesh(landGeo, groundMat);
       land.rotation.x = -Math.PI / 2;
-      land.position.set(100, 0.0, 574); // South edge exactly at z = -176 (south of Monaco track)
+      land.position.set(100, 0.0, 574);
       land.receiveShadow = true;
       group.add(land);
     } else if (circuitMeta.id === 'abudhabi') {
@@ -173,7 +329,7 @@
       landGeo.computeVertexNormals();
       const land = new THREE.Mesh(landGeo, groundMat);
       land.rotation.x = -Math.PI / 2;
-      land.position.set(80, 0.0, 526); // South edge exactly at z = -224 (south of Abu Dhabi track)
+      land.position.set(80, 0.0, 526);
       land.receiveShadow = true;
       group.add(land);
     } else {
@@ -213,26 +369,31 @@
     );
     group.add(skyDome);
 
-    const cloudGroup = new THREE.Group();
+    // Instanced sky clouds (single draw call!)
     const cloudMat = getToonMaterial(circuitMeta.id === 'silverstone' ? '#DCE6F0' : circuitMeta.id === 'abudhabi' ? '#FFB5C2' : '#FFFFFF');
     const cloudPuffGeo = new THREE.SphereGeometry(12, 10, 8);
+    const cloudInst = new THREE.InstancedMesh(cloudPuffGeo, cloudMat, 18 * 3);
+    const dummy = new THREE.Object3D();
+    let ci = 0;
     for (let i = 0; i < 18; i++) {
-      const c = new THREE.Group();
       const angle = (i / 18) * Math.PI * 2;
       const dist = 290 + (i % 3) * 85;
-      c.position.set(Math.cos(angle) * dist + 60, 102 + (i % 4) * 20, Math.sin(angle) * dist);
+      const cx = Math.cos(angle) * dist + 60;
+      const cy = 102 + (i % 4) * 20;
+      const cz = Math.sin(angle) * dist;
       for (let p = -1; p <= 1; p++) {
-        const puff = new THREE.Mesh(cloudPuffGeo, cloudMat);
-        puff.position.set(p * 11, p === 0 ? 4 : 0, (p % 2) * 3);
-        puff.scale.set(1.2, 0.72, 0.9);
-        c.add(puff);
+        dummy.position.set(cx + p * 11, cy + (p === 0 ? 4 : 0), cz + (p % 2) * 3);
+        dummy.rotation.set(0, 0, 0);
+        dummy.scale.set(1.2, 0.72, 0.9);
+        dummy.updateMatrix();
+        cloudInst.setMatrixAt(ci++, dummy.matrix);
       }
-      cloudGroup.add(c);
     }
-    group.add(cloudGroup);
-    animators.push((dt) => { cloudGroup.rotation.y += dt * 0.008; });
+    cloudInst.instanceMatrix.needsUpdate = true;
+    group.add(cloudInst);
+    animators.push((dt) => { cloudInst.rotation.y += dt * 0.008; });
 
-    return { skyColor, fogColor, sunColor, ambientColor };
+    return { skyColor, fogColor, fogDensity, sunColor, ambientColor };
   }
 
   // Helper to construct a guaranteed upward-normal (+Y), FrontSide strip along track frames
@@ -242,7 +403,6 @@
     const uvs = [];
     const indices = [];
 
-    // Pass 1: build all ribbon vertices and UVs first
     for (let i = 0; i <= N; i++) {
       const f = frames[i % N];
       const offA = innerOffsetFn(f);
@@ -255,7 +415,6 @@
       uvs.push(0, v, 1, v);
     }
 
-    // Pass 2: build triangles with strictly enforced upward (+Y) FrontSide winding
     for (let i = 0; i < N; i++) {
       const a = i * 2;
       const b = i * 2 + 1;
@@ -266,13 +425,9 @@
         const x0 = positions[i0 * 3], z0 = positions[i0 * 3 + 2];
         const x1 = positions[i1 * 3], z1 = positions[i1 * 3 + 2];
         const x2 = positions[i2 * 3], z2 = positions[i2 * 3 + 2];
-        // Y component of (P1 - P0) x (P2 - P0)
         const crossY = (z1 - z0) * (x2 - x0) - (x1 - x0) * (z2 - z0);
-        if (crossY >= 0) {
-          indices.push(i0, i1, i2);
-        } else {
-          indices.push(i0, i2, i1);
-        }
+        if (crossY >= 0) indices.push(i0, i1, i2);
+        else indices.push(i0, i2, i1);
       };
 
       pushUpTri(a, b, c);
@@ -290,11 +445,11 @@
   }
 
   function buildTrackRibbon(frames, halfWidth, circuitMeta, group) {
-    const { getToonMaterial, getToonGradientMap, getAsphaltTexture } = global.ToonMat;
+    const { getToonMaterial, getToonGradientMap, getAsphaltTexture, getCatchFenceTexture } = global.ToonMat;
     const N = frames.length;
     const wallOffset = circuitMeta.id === 'monaco' ? halfWidth + 2.3 : halfWidth + 4.4;
 
-    // 1. ESCAPATORIAS (RUNOFF SHOULDERS) — Opaque, FrontSide, y = +0.035 (strictly below asphalt y = +0.08, above terrain y = 0.0)
+    // 1. ESCAPATORIAS (RUNOFF SHOULDERS) — Opaque, FrontSide, y = +0.035
     const runoffColor = circuitMeta.id === 'abudhabi'
       ? '#1E3A8A'
       : circuitMeta.id === 'monaco'
@@ -313,22 +468,19 @@
       polygonOffsetUnits: -1
     });
 
-    const leftRunoffGeo = createTrackStripGeometry(frames, () => -(wallOffset + 0.6), () => -halfWidth, 0.035);
-    const rightRunoffGeo = createTrackStripGeometry(frames, () => halfWidth, () => wallOffset + 0.6, 0.035);
+    const leftRunoffGeo = createTrackStripGeometry(frames, () => -(wallOffset + 0.8), () => -halfWidth, 0.035);
+    const rightRunoffGeo = createTrackStripGeometry(frames, () => halfWidth, () => wallOffset + 0.8, 0.035);
 
     const leftRunoff = new THREE.Mesh(leftRunoffGeo, runoffMat);
     const rightRunoff = new THREE.Mesh(rightRunoffGeo, runoffMat);
     leftRunoff.receiveShadow = true;
     rightRunoff.receiveShadow = true;
-    leftRunoff.castShadow = false;
-    rightRunoff.castShadow = false;
     leftRunoff.frustumCulled = false;
     rightRunoff.frustumCulled = false;
     group.add(leftRunoff, rightRunoff);
 
-    // 2. ASFALTO PRINCIPAL — Strictly elevated at y = +0.08 with polygonOffset (-1, -1), strictly opaque FrontSide
+    // 2. ASFALTO PRINCIPAL — Strictly elevated at y = +0.08 with polygonOffset (-1, -1), opaque FrontSide
     const roadGeo = createTrackStripGeometry(frames, () => -halfWidth, () => halfWidth, 0.08);
-
     const isWet = circuitMeta.rainIntensity > 0;
     const roadMat = isWet
       ? new THREE.MeshPhongMaterial({
@@ -363,13 +515,16 @@
     roadMesh.frustumCulled = false;
     group.add(roadMesh);
 
-    // 3. PIANOS (KERBS) Y BARRERAS — Strictly opaque FrontSide + recalculated normals
+    // 3. PIANOS (KERBS) BICOLORES CON RELIEVE 3D + MUROS DE HORMIGÓN + VALLAS METÁLICAS FIA (InstancedMesh)
     const kerbColorA = circuitMeta.id === 'abudhabi' ? '#00F5D4' : '#FF2A44';
-    const barrierColorA = circuitMeta.id === 'abudhabi' ? '#FF007F' : circuitMeta.id === 'monaco' ? '#FF2A44' : '#2563EB';
-    const kerbGeo = new THREE.BoxGeometry(1.45, 0.20, 3.2);
-    kerbGeo.computeVertexNormals();
-    const barrierGeo = new THREE.BoxGeometry(0.9, 1.45, 4.2);
-    barrierGeo.computeVertexNormals();
+    const barrierAccent = circuitMeta.id === 'abudhabi' ? '#FF007F' : circuitMeta.id === 'monaco' ? '#FF2A44' : '#2563EB';
+    const kerbGeo = createReliefKerbGeometry();
+    const concreteWallGeo = new THREE.BoxGeometry(0.92, 1.35, 4.35);
+    concreteWallGeo.computeVertexNormals();
+    const wallTopCapGeo = new THREE.BoxGeometry(0.98, 0.24, 4.35);
+    wallTopCapGeo.computeVertexNormals();
+    const fencePostGeo = new THREE.CylinderGeometry(0.085, 0.095, 2.95, 6);
+    const fenceMeshGeo = new THREE.PlaneGeometry(8.6, 2.35);
 
     const opaqueOpts = {
       transparent: false,
@@ -381,24 +536,40 @@
 
     const kerbA = new THREE.InstancedMesh(kerbGeo, getToonMaterial(kerbColorA, opaqueOpts), N);
     const kerbB = new THREE.InstancedMesh(kerbGeo, getToonMaterial('#FFFFFF', opaqueOpts), N);
-    const barA = new THREE.InstancedMesh(barrierGeo, getToonMaterial(barrierColorA, opaqueOpts), N);
-    const barB = new THREE.InstancedMesh(barrierGeo, getToonMaterial('#FFFFFF', opaqueOpts), N);
+    kerbA.name = 'track_kerbs_3d_a';
+    kerbB.name = 'track_kerbs_3d_b';
 
-    kerbA.receiveShadow = true;
-    kerbB.receiveShadow = true;
-    barA.receiveShadow = true;
-    barB.receiveShadow = true;
+    const concreteBase = new THREE.InstancedMesh(concreteWallGeo, getToonMaterial('#CBD5E1', opaqueOpts), N);
+    const wallCapA = new THREE.InstancedMesh(wallTopCapGeo, getToonMaterial(barrierAccent, opaqueOpts), N);
+    const wallCapB = new THREE.InstancedMesh(wallTopCapGeo, getToonMaterial('#FFFFFF', opaqueOpts), N);
+    const fencePosts = new THREE.InstancedMesh(fencePostGeo, getToonMaterial('#64748B', opaqueOpts), N);
+    fencePosts.name = 'track_fia_fence_posts';
+
+    const fenceMat = new THREE.MeshBasicMaterial({
+      map: getCatchFenceTexture(),
+      transparent: true,
+      opacity: 0.72,
+      depthWrite: false,
+      side: THREE.DoubleSide
+    });
+    const fencePanels = new THREE.InstancedMesh(fenceMeshGeo, fenceMat, Math.ceil(N / 2) + 4);
+    fencePanels.name = 'track_fia_fence_panels';
+
+    kerbA.receiveShadow = true; kerbB.receiveShadow = true;
+    concreteBase.receiveShadow = true; wallCapA.receiveShadow = true; wallCapB.receiveShadow = true;
 
     const dummy = new THREE.Object3D();
-    let ka = 0, kb = 0, ba = 0, bb = 0;
+    let ka = 0, kb = 0, cb = 0, wca = 0, wcb = 0, fp = 0, fn = 0;
 
     for (let i = 0; i < N; i += 2) {
       const f = frames[i];
       const yaw = Math.atan2(f.tangent.x, f.tangent.z);
       const isEven = (Math.floor(i / 2) % 2) === 0;
+      const isPitOpening = (i < 24 || i > N - 14); // keep pit wall cleanly separated on right side of start straight
+
       [-1, 1].forEach(side => {
         const kPos = f.pos.clone().addScaledVector(f.right, side * (halfWidth + 0.68));
-        dummy.position.set(kPos.x, 0.14, kPos.z);
+        dummy.position.set(kPos.x, 0.145, kPos.z);
         dummy.rotation.set(0, yaw, 0);
         dummy.scale.set(1, 1, 1);
         dummy.updateMatrix();
@@ -406,26 +577,331 @@
         else kerbB.setMatrixAt(kb++, dummy.matrix);
 
         const bPos = f.pos.clone().addScaledVector(f.right, side * wallOffset);
-        dummy.position.set(bPos.x, 0.76, bPos.z);
+        dummy.position.set(bPos.x, 0.68, bPos.z);
+        dummy.rotation.set(0, yaw, 0);
         dummy.updateMatrix();
-        if (isEven) barA.setMatrixAt(ba++, dummy.matrix);
-        else barB.setMatrixAt(bb++, dummy.matrix);
+        concreteBase.setMatrixAt(cb++, dummy.matrix);
+
+        dummy.position.set(bPos.x, 1.44, bPos.z);
+        dummy.updateMatrix();
+        if (isEven) wallCapA.setMatrixAt(wca++, dummy.matrix);
+        else wallCapB.setMatrixAt(wcb++, dummy.matrix);
+
+        // FIA metallic catch-fence posts & wire mesh panels on top of concrete barrier
+        if (i % 4 === 0 && !(isPitOpening && side === -1)) {
+          dummy.position.set(bPos.x, 2.85, bPos.z);
+          dummy.rotation.set(0, yaw, 0);
+          dummy.updateMatrix();
+          fencePosts.setMatrixAt(fp++, dummy.matrix);
+
+          // Wire panel aligned along track tangent
+          dummy.position.set(bPos.x, 2.78, bPos.z);
+          dummy.rotation.set(0, yaw + Math.PI / 2, 0);
+          dummy.updateMatrix();
+          if (fn < fencePanels.count) fencePanels.setMatrixAt(fn++, dummy.matrix);
+        }
       });
     }
 
-    kerbA.count = ka; kerbB.count = kb; barA.count = ba; barB.count = bb;
-    kerbA.instanceMatrix.needsUpdate = true; kerbB.instanceMatrix.needsUpdate = true;
-    barA.instanceMatrix.needsUpdate = true; barB.instanceMatrix.needsUpdate = true;
-    group.add(kerbA, kerbB, barA, barB);
+    kerbA.count = ka; kerbB.count = kb;
+    concreteBase.count = cb; wallCapA.count = wca; wallCapB.count = wcb;
+    fencePosts.count = fp; fencePanels.count = fn;
+
+    [kerbA, kerbB, concreteBase, wallCapA, wallCapB, fencePosts, fencePanels].forEach(im => {
+      im.instanceMatrix.needsUpdate = true;
+      group.add(im);
+    });
+  }
+
+  // ==========================================================================
+  // CARTELES DE FRENADA (150m/100m/50m), PROTECCIONES TECPRO Y MARCAS DE GOMA
+  // ==========================================================================
+  function buildBrakingZonesAndTecpro(frames, heavyCorners, halfWidth, totalLength, circuitMeta, group) {
+    const {
+      getToonMaterial,
+      createBrakeBoardTexture,
+      getBrakingRubberTexture
+    } = global.ToonMat;
+    const N = frames.length;
+    const wallOffset = circuitMeta.id === 'monaco' ? halfWidth + 2.3 : halfWidth + 4.4;
+    const dummy = new THREE.Object3D();
+
+    // Helper: fetch closest frame at distance s
+    const frameAtS = (s) => {
+      let wrapped = s % totalLength;
+      if (wrapped < 0) wrapped += totalLength;
+      return frames[Math.floor((wrapped / totalLength) * N) % N];
+    };
+
+    // 1. Physical FIA Braking Distance Boards (150m, 100m, 50m) before each heavy braking zone
+    const boardDistances = [
+      { label: 150, distBefore: 66 },
+      { label: 100, distBefore: 44 },
+      { label: 50, distBefore: 22 }
+    ];
+    const boardGeo = new THREE.BoxGeometry(2.6, 1.65, 0.16);
+    const poleGeo = new THREE.CylinderGeometry(0.08, 0.08, 2.2, 6);
+    const poleMat = getToonMaterial('#334155');
+    const backMat = getToonMaterial('#1E293B');
+
+    const boardMats = {};
+    boardDistances.forEach(({ label }) => {
+      const faceMat = new THREE.MeshBasicMaterial({ map: createBrakeBoardTexture(label), side: THREE.FrontSide });
+      // Box faces: +X, -X, +Y, -Y, +Z, -Z (oncoming driver looks along +tangent -> sees -Z face!)
+      boardMats[label] = [backMat, backMat, backMat, backMat, faceMat, faceMat];
+    });
+
+    const boardGroup = new THREE.Group();
+    boardGroup.name = 'track_braking_boards';
+    const poleMatrices = [];
+
+    heavyCorners.forEach(corner => {
+      const turnSign = Math.sign(corner.curvature || 1);
+      // Place braking boards on the OUTSIDE of the corner approach where driver looks!
+      const outsideSide = -turnSign;
+      const entryS = corner.s - 12;
+
+      boardDistances.forEach(({ label, distBefore }) => {
+        const f = frameAtS(entryS - distBefore);
+        const yaw = Math.atan2(f.tangent.x, f.tangent.z);
+        const bPos = f.pos.clone().addScaledVector(f.right, outsideSide * (wallOffset - 0.55));
+
+        const board = new THREE.Mesh(boardGeo, boardMats[label]);
+        board.name = `brake_board_${label}m`;
+        board.position.set(bPos.x, 2.35, bPos.z);
+        board.rotation.y = yaw;
+        boardGroup.add(board);
+
+        [-0.85, 0.85].forEach(px => {
+          dummy.position.set(
+            bPos.x + f.right.x * px,
+            1.1,
+            bPos.z + f.right.z * px
+          );
+          dummy.rotation.set(0, yaw, 0);
+          dummy.scale.set(1, 1, 1);
+          dummy.updateMatrix();
+          poleMatrices.push(dummy.matrix.clone());
+        });
+      });
+    });
+
+    if (poleMatrices.length > 0) {
+      const poleInst = new THREE.InstancedMesh(poleGeo, poleMat, poleMatrices.length);
+      poleMatrices.forEach((m, idx) => poleInst.setMatrixAt(idx, m));
+      poleInst.instanceMatrix.needsUpdate = true;
+      boardGroup.add(poleInst);
+    }
+    group.add(boardGroup);
+
+    // 2. Red & White Tecpro Safety Barriers (InstancedMesh) in outer runoff zones of heavy corners
+    const tecproGeo = createTecproBlockGeometry();
+    const tecproRed = new THREE.InstancedMesh(tecproGeo, getToonMaterial('#E50914'), 260);
+    const tecproWhite = new THREE.InstancedMesh(tecproGeo, getToonMaterial('#F8FAFC'), 260);
+    tecproRed.name = 'track_tecpro_red';
+    tecproWhite.name = 'track_tecpro_white';
+    tecproRed.receiveShadow = true;
+    tecproWhite.receiveShadow = true;
+
+    let tr = 0, tw = 0;
+    const usedIdx = new Set();
+    for (let i = 0; i < N; i += 2) {
+      const curv = frames[i].curvature;
+      if (Math.abs(curv) < 0.34) continue;
+      const outsideSide = -Math.sign(curv);
+      const key = `${i}_${outsideSide}`;
+      if (usedIdx.has(key)) continue;
+      usedIdx.add(key);
+
+      const f = frames[i];
+      const yaw = Math.atan2(f.tangent.x, f.tangent.z);
+      const tPos = f.pos.clone().addScaledVector(f.right, outsideSide * (wallOffset - 0.95));
+      dummy.position.set(tPos.x, 0.72, tPos.z);
+      dummy.rotation.set(0, yaw, 0);
+      dummy.scale.set(1, 1, 1);
+      dummy.updateMatrix();
+      if (((i >> 1) % 2) === 0 && tr < 260) tecproRed.setMatrixAt(tr++, dummy.matrix);
+      else if (tw < 260) tecproWhite.setMatrixAt(tw++, dummy.matrix);
+    }
+    tecproRed.count = tr;
+    tecproWhite.count = tw;
+    tecproRed.instanceMatrix.needsUpdate = true;
+    tecproWhite.instanceMatrix.needsUpdate = true;
+    group.add(tecproRed, tecproWhite);
+
+    // 3. Dark Rubber Braking Skid-Marks along the ideal braking entry line
+    const rubberMat = new THREE.MeshBasicMaterial({
+      map: getBrakingRubberTexture(),
+      transparent: true,
+      opacity: 0.78,
+      depthWrite: false,
+      depthTest: true,
+      side: THREE.FrontSide,
+      polygonOffset: true,
+      polygonOffsetFactor: -2,
+      polygonOffsetUnits: -2
+    });
+    const rubberGroup = new THREE.Group();
+    rubberGroup.name = 'track_braking_rubber_marks';
+
+    heavyCorners.forEach(corner => {
+      const turnSign = Math.sign(corner.curvature || 1);
+      const outsideD = -turnSign * (halfWidth * 0.56);
+      const apexD = turnSign * (halfWidth * 0.45);
+      const steps = 14;
+      const startS = corner.s - 48;
+      const endS = corner.s - 2;
+
+      const positions = [];
+      const uvs = [];
+      const indices = [];
+      const stripHalfW = 1.65;
+
+      for (let k = 0; k <= steps; k++) {
+        const t = k / steps;
+        const s = startS + (endS - startS) * t;
+        const f = frameAtS(s);
+        // Stay on outside braking line, then smoothly blend toward inside apex in final 30%
+        const blend = t < 0.65 ? 0 : Math.pow((t - 0.65) / 0.35, 1.6);
+        const centerD = THREE.MathUtils.lerp(outsideD, apexD, blend);
+        const pL = f.pos.clone().addScaledVector(f.right, centerD - stripHalfW);
+        const pR = f.pos.clone().addScaledVector(f.right, centerD + stripHalfW);
+        positions.push(pL.x, 0.088, pL.z, pR.x, 0.088, pR.z);
+        uvs.push(0, t, 1, t);
+      }
+
+      for (let k = 0; k < steps; k++) {
+        const a = k * 2, b = a + 1, c = a + 2, d = a + 3;
+        const pushUp = (i0, i1, i2) => {
+          const crossY = (positions[i1 * 3 + 2] - positions[i0 * 3 + 2]) * (positions[i2 * 3] - positions[i0 * 3])
+            - (positions[i1 * 3] - positions[i0 * 3]) * (positions[i2 * 3 + 2] - positions[i0 * 3 + 2]);
+          if (crossY >= 0) indices.push(i0, i1, i2);
+          else indices.push(i0, i2, i1);
+        };
+        pushUp(a, b, c);
+        pushUp(b, d, c);
+      }
+
+      const geo = new THREE.BufferGeometry();
+      geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+      geo.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
+      geo.setIndex(indices);
+      geo.computeVertexNormals();
+      const mesh = new THREE.Mesh(geo, rubberMat);
+      mesh.renderOrder = 1;
+      rubberGroup.add(mesh);
+    });
+    group.add(rubberGroup);
+  }
+
+  // ==========================================================================
+  // EDIFICIO DE BOXES (PIT LANE + GARAJES + TORRE DE CONTROL)
+  // ==========================================================================
+  function buildPitLaneBuilding(frames, halfWidth, circuitMeta, group) {
+    const { getToonMaterial, getPlasticGlossMaterial, createPitSignTexture } = global.ToonMat;
+    const f0 = frames[0];
+    const yaw = Math.atan2(f0.tangent.x, f0.tangent.z);
+
+    // Position Pit Complex cleanly along the left side (-right) of the Start/Finish straight,
+    // rotated +PI so local +X (garages, glass gallery & PIT LANE sign) faces directly onto the grid!
+    const pitGroup = new THREE.Group();
+    pitGroup.name = 'track_pit_lane_building';
+    const sideOffset = -(halfWidth + (circuitMeta.id === 'monaco' ? 12.8 : 15.2));
+    const anchor = f0.pos.clone().addScaledVector(f0.right, sideOffset);
+    pitGroup.position.set(anchor.x, 0, anchor.z);
+    pitGroup.rotation.y = yaw + Math.PI;
+
+    // Pit Lane asphalt apron strip (y = +0.055 strictly below track asphalt +0.08, above terrain 0.0)
+    const apron = new THREE.Mesh(
+      new THREE.PlaneGeometry(9.2, 78),
+      getToonMaterial('#2B3444', {
+        transparent: false, opacity: 1.0, depthWrite: true, depthTest: true, side: THREE.FrontSide,
+        polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -1
+      })
+    );
+    apron.rotation.x = -Math.PI / 2;
+    apron.position.set(4.8, 0.055, 8);
+    apron.receiveShadow = true;
+    pitGroup.add(apron);
+
+    // Pit speed-limit guide stripe
+    const pitLine = new THREE.Mesh(
+      new THREE.PlaneGeometry(0.45, 74),
+      new THREE.MeshBasicMaterial({ color: '#FFD43B', polygonOffset: true, polygonOffsetFactor: -2 })
+    );
+    pitLine.rotation.x = -Math.PI / 2;
+    pitLine.position.set(7.6, 0.062, 8);
+    pitGroup.add(pitLine);
+
+    // Main two-story F1 Pit Building structure
+    const bodyMat = getToonMaterial('#E2E8F0');
+    const darkMat = getToonMaterial('#1E293B');
+    const glassMat = getPlasticGlossMaterial('#0EA5E9', { shininess: 160 });
+    const accentMat = getToonMaterial(circuitMeta.themeColor);
+
+    const mainHall = new THREE.Mesh(new THREE.BoxGeometry(10.2, 11.5, 68), bodyMat);
+    mainHall.position.set(-4.8, 5.75, 8);
+    mainHall.castShadow = true;
+    mainHall.receiveShadow = true;
+    pitGroup.add(mainHall);
+
+    // Overhanging Pit Canopy Roof + Red/Cyan Pit Lane Sign Banner facing the track
+    const roof = new THREE.Mesh(new THREE.BoxGeometry(13.6, 1.15, 70), darkMat);
+    roof.position.set(-3.4, 11.9, 8);
+    pitGroup.add(roof);
+
+    const pitBanner = new THREE.Mesh(
+      new THREE.PlaneGeometry(54, 2.3),
+      new THREE.MeshBasicMaterial({ map: createPitSignTexture(circuitMeta.name), side: THREE.FrontSide })
+    );
+    pitBanner.rotation.y = Math.PI / 2;
+    pitBanner.position.set(3.48, 11.9, 8);
+    pitGroup.add(pitBanner);
+
+    // Upper Paddock Club continuous panoramic glass gallery
+    const paddockGlass = new THREE.Mesh(new THREE.BoxGeometry(0.5, 3.2, 64), glassMat);
+    paddockGlass.position.set(0.45, 8.2, 8);
+    pitGroup.add(paddockGlass);
+
+    // 8 Multi-Bay Team Garages (recessed dark bay doors + colorful team headers)
+    const teamHeaders = ['#FF8000', '#DC0000', '#0600EF', '#00D2BE', '#006F62', '#005AFF', '#FF87BC', '#22C55E'];
+    const bayDoorGeo = new THREE.BoxGeometry(0.45, 4.1, 6.2);
+    const bayHeaderGeo = new THREE.BoxGeometry(0.65, 1.15, 6.8);
+    for (let b = 0; b < 8; b++) {
+      const bz = -20 + b * 8.0;
+      const door = new THREE.Mesh(bayDoorGeo, darkMat);
+      door.position.set(0.45, 2.05, bz);
+      pitGroup.add(door);
+
+      const header = new THREE.Mesh(bayHeaderGeo, getToonMaterial(teamHeaders[b % teamHeaders.length]));
+      header.position.set(0.52, 4.65, bz);
+      pitGroup.add(header);
+    }
+
+    // Race Control Tower overlooking the start/finish gantry
+    const towerBase = new THREE.Mesh(new THREE.BoxGeometry(6.8, 17.5, 8.2), darkMat);
+    towerBase.position.set(-4.2, 8.75, -29.5);
+    towerBase.castShadow = true;
+    pitGroup.add(towerBase);
+
+    const towerGlass = new THREE.Mesh(new THREE.BoxGeometry(7.6, 3.6, 8.8), glassMat);
+    towerGlass.position.set(-4.2, 15.2, -29.5);
+    pitGroup.add(towerGlass);
+
+    const towerTrim = new THREE.Mesh(new THREE.BoxGeometry(8.0, 0.85, 9.2), accentMat);
+    towerTrim.position.set(-4.2, 17.5, -29.5);
+    pitGroup.add(towerTrim);
+
+    group.add(pitGroup);
   }
 
   function buildStartGantry(frame0, trackWidth, circuitMeta, group) {
     const { getToonMaterial, getPlasticGlossMaterial, addCartoonOutline, getCheckeredTexture } = global.ToonMat;
     const gantry = new THREE.Group();
+    gantry.name = 'track_start_gantry';
     gantry.position.copy(frame0.pos);
     gantry.rotation.y = Math.atan2(frame0.tangent.x, frame0.tangent.z);
 
-    // Finish strip sits cleanly above the y = +0.08 asphalt with stronger polygonOffset (-2, -2)
     const finishGeo = new THREE.PlaneGeometry(trackWidth, 3.6);
     finishGeo.computeVertexNormals();
     const finishStrip = new THREE.Mesh(
@@ -489,8 +965,11 @@
     return bulbs;
   }
 
-  function buildAnimatedGrandstands(frames, halfWidth, circuitMeta, group, animators) {
-    const { getToonMaterial, getPlasticGlossMaterial, addCartoonOutline } = global.ToonMat;
+  // ==========================================================================
+  // TRIBUNAS INSTANCIADAS (InstancedMesh) + PÚBLICO ESTILIZADO ANIMADO
+  // ==========================================================================
+  function buildInstancedGrandstands(frames, halfWidth, circuitMeta, group, animators) {
+    const { getToonMaterial } = global.ToonMat;
     const N = frames.length;
     const standIndices = [16, 108, 215, 315, 415, 505];
     const standColors = ['#FF3B5C', '#00B4D8', '#FFD43B', '#FF8000', '#9775FA', '#22C55E'];
@@ -499,34 +978,49 @@
     const skinPalette = ['#F6C8A8', '#E6B28A', '#8D5524', '#FAD2B4', '#DEA77E'];
     const shirtPalette = ['#FF3B5C', '#FF8000', '#FFD43B', '#00D2BE', '#3B82F6', '#A855F7', '#22C55E', '#FF4F9A'];
 
+    // InstancedMeshes for all repeated grandstand structures (benches, roofs, pillars!)
+    const standCount = standIndices.length;
+    const benchInst = new THREE.InstancedMesh(new THREE.BoxGeometry(28, 1.3, 2.2), new THREE.MeshToonMaterial({ color: '#FFFFFF' }), standCount * 4);
+    const roofInst = new THREE.InstancedMesh(new THREE.BoxGeometry(30, 0.75, 10.5), new THREE.MeshToonMaterial({ color: '#FFFFFF' }), standCount);
+    const pillarInst = new THREE.InstancedMesh(new THREE.BoxGeometry(0.9, 9.8, 0.9), getToonMaterial('#1E293B'), standCount * 2);
+    benchInst.name = 'track_grandstands_benches';
+    roofInst.name = 'track_grandstands_roofs';
+    pillarInst.name = 'track_grandstands_pillars';
+    benchInst.receiveShadow = true;
+
+    const tmpCol = new THREE.Color();
+    const dummy = new THREE.Object3D();
+    const upAxis = new THREE.Vector3(0, 1, 0);
+    const localVec = new THREE.Vector3();
+    let bi = 0, ri = 0, pi = 0;
+
     standIndices.forEach((centerIdx, sIdx) => {
       const f = frames[centerIdx % N];
       for (let k = -18; k <= 18; k++) frames[(centerIdx + k + N) % N].hasGrandstand = true;
 
-      const side = sIdx % 2 === 0 ? 1 : -1;
+      // Put first grandstand on right (+1) cleanly opposite the Pit Lane building (-1)
+      const side = sIdx === 0 ? 1 : (sIdx % 2 === 0 ? 1 : -1);
       const offset = halfWidth + (circuitMeta.id === 'monaco' ? 8.5 : 11.5);
       const standPos = f.pos.clone().addScaledVector(f.right, side * offset);
       const yaw = Math.atan2(f.tangent.x, f.tangent.z) + (side === 1 ? Math.PI / 2 : -Math.PI / 2);
 
-      const stand = new THREE.Group();
-      stand.position.set(standPos.x, 0, standPos.z);
-      stand.rotation.y = yaw;
-
-      const accentMat = getToonMaterial(standColors[sIdx % standColors.length]);
-      const concreteMat = getToonMaterial('#E2E8F0');
-      const roofMat = getPlasticGlossMaterial(standColors[(sIdx + 2) % standColors.length]);
-
       for (let tier = 0; tier < 4; tier++) {
-        const bench = new THREE.Mesh(new THREE.BoxGeometry(28, 1.3, 2.2), tier % 2 === 0 ? concreteMat : accentMat);
-        bench.position.set(0, 0.7 + tier * 1.3, -tier * 2.0);
-        stand.add(bench);
+        localVec.set(0, 0.7 + tier * 1.3, -tier * 2.0).applyAxisAngle(upAxis, yaw).add(standPos);
+        dummy.position.copy(localVec);
+        dummy.rotation.set(0, yaw, 0);
+        dummy.scale.set(1, 1, 1);
+        dummy.updateMatrix();
+        benchInst.setMatrixAt(bi, dummy.matrix);
+        tmpCol.set(tier % 2 === 0 ? '#E2E8F0' : standColors[sIdx % standColors.length]);
+        benchInst.setColorAt(bi, tmpCol);
+        bi++;
 
         for (let col = -12; col <= 12; col += 2.2) {
-          const localPos = new THREE.Vector3(col + (Math.random() - 0.5) * 0.4, 1.75 + tier * 1.3, -tier * 2.0 + 0.2);
-          localPos.applyAxisAngle(new THREE.Vector3(0, 1, 0), yaw);
-          localPos.add(stand.position);
+          localVec.set(col + (Math.random() - 0.5) * 0.4, 1.75 + tier * 1.3, -tier * 2.0 + 0.2)
+            .applyAxisAngle(upAxis, yaw)
+            .add(standPos);
           spectators.push({
-            x: localPos.x, y: localPos.y, z: localPos.z,
+            x: localVec.x, y: localVec.y, z: localVec.z,
             phase: Math.random() * Math.PI * 2,
             shirt: shirtPalette[(Math.abs(Math.floor(col * 3)) + sIdx + tier) % shirtPalette.length],
             skin: skinPalette[(Math.abs(Math.floor(col)) + tier) % skinPalette.length]
@@ -534,30 +1028,45 @@
         }
       }
 
-      const roof = new THREE.Mesh(new THREE.BoxGeometry(30, 0.75, 10.5), roofMat);
-      roof.position.set(0, 9.8, -3.2);
-      roof.rotation.x = 0.14;
-      addCartoonOutline(roof, [1.02, 1.25, 1.04]);
-      stand.add(roof);
+      // Canopy roof
+      localVec.set(0, 9.8, -3.2).applyAxisAngle(upAxis, yaw).add(standPos);
+      dummy.position.copy(localVec);
+      dummy.rotation.set(0, yaw, 0);
+      dummy.rotateX(0.14);
+      dummy.scale.set(1, 1, 1);
+      dummy.updateMatrix();
+      roofInst.setMatrixAt(ri, dummy.matrix);
+      tmpCol.set(standColors[(sIdx + 2) % standColors.length]);
+      roofInst.setColorAt(ri, tmpCol);
+      ri++;
 
+      // Twin support pillars
       [-13.5, 13.5].forEach(px => {
-        const post = new THREE.Mesh(new THREE.BoxGeometry(0.9, 9.8, 0.9), getToonMaterial('#1E293B'));
-        post.position.set(px, 4.9, -7.2);
-        stand.add(post);
+        localVec.set(px, 4.9, -7.2).applyAxisAngle(upAxis, yaw).add(standPos);
+        dummy.position.copy(localVec);
+        dummy.rotation.set(0, yaw, 0);
+        dummy.scale.set(1, 1, 1);
+        dummy.updateMatrix();
+        pillarInst.setMatrixAt(pi++, dummy.matrix);
       });
-      group.add(stand);
     });
 
+    benchInst.instanceMatrix.needsUpdate = true;
+    roofInst.instanceMatrix.needsUpdate = true;
+    pillarInst.instanceMatrix.needsUpdate = true;
+    if (benchInst.instanceColor) benchInst.instanceColor.needsUpdate = true;
+    if (roofInst.instanceColor) roofInst.instanceColor.needsUpdate = true;
+    group.add(benchInst, roofInst, pillarInst);
+
+    // Animated Stylized Spectators (InstancedMesh, zero per-frame allocations)
     const count = spectators.length;
     const bodyInst = new THREE.InstancedMesh(new THREE.BoxGeometry(0.75, 0.85, 0.55), new THREE.MeshToonMaterial({ color: '#FFFFFF' }), count);
     const headInst = new THREE.InstancedMesh(new THREE.SphereGeometry(0.62, 10, 8), new THREE.MeshToonMaterial({ color: '#FFFFFF' }), count);
 
-    const tmpColor = new THREE.Color();
-    const dummy = new THREE.Object3D();
     spectators.forEach((sp, i) => {
-      tmpColor.set(sp.shirt); bodyInst.setColorAt(i, tmpColor);
-      tmpColor.set(sp.skin); headInst.setColorAt(i, tmpColor);
-      dummy.position.set(sp.x, sp.y, sp.z); dummy.scale.set(1, 1, 1); dummy.updateMatrix();
+      tmpCol.set(sp.shirt); bodyInst.setColorAt(i, tmpCol);
+      tmpCol.set(sp.skin); headInst.setColorAt(i, tmpCol);
+      dummy.position.set(sp.x, sp.y, sp.z); dummy.rotation.set(0, 0, 0); dummy.scale.set(1, 1, 1); dummy.updateMatrix();
       bodyInst.setMatrixAt(i, dummy.matrix);
       dummy.position.set(sp.x, sp.y + 0.95, sp.z); dummy.updateMatrix();
       headInst.setMatrixAt(i, dummy.matrix);
@@ -566,6 +1075,7 @@
     if (headInst.instanceColor) headInst.instanceColor.needsUpdate = true;
     group.add(bodyInst, headInst);
 
+    const animDummy = new THREE.Object3D();
     animators.push((dt, elapsed, crowdExcitement = 0.35) => {
       const jumpSpeed = 5.5 + crowdExcitement * 7.5;
       const jumpAmp = 0.25 + crowdExcitement * 0.55;
@@ -574,26 +1084,65 @@
         const bounce = Math.abs(Math.sin(elapsed * jumpSpeed + sp.phase)) * jumpAmp;
         const headBob = Math.sin(elapsed * jumpSpeed * 1.1 + sp.phase) * 0.22;
 
-        dummy.position.set(sp.x, sp.y + bounce, sp.z);
-        dummy.rotation.set(0, 0, headBob * 0.4);
-        dummy.scale.set(1, 1, 1);
-        dummy.updateMatrix();
-        bodyInst.setMatrixAt(i, dummy.matrix);
+        animDummy.position.set(sp.x, sp.y + bounce, sp.z);
+        animDummy.rotation.set(0, 0, headBob * 0.4);
+        animDummy.scale.set(1, 1, 1);
+        animDummy.updateMatrix();
+        bodyInst.setMatrixAt(i, animDummy.matrix);
 
-        dummy.position.set(sp.x, sp.y + 0.95 + bounce * 1.28, sp.z);
-        dummy.rotation.set(0, 0, headBob);
-        dummy.updateMatrix();
-        headInst.setMatrixAt(i, dummy.matrix);
+        animDummy.position.set(sp.x, sp.y + 0.95 + bounce * 1.28, sp.z);
+        animDummy.rotation.set(0, 0, headBob);
+        animDummy.updateMatrix();
+        headInst.setMatrixAt(i, animDummy.matrix);
       }
       bodyInst.instanceMatrix.needsUpdate = true;
       headInst.instanceMatrix.needsUpdate = true;
     });
   }
 
+  // Helper: Instanced Palm Tree Grove (shared by Monaco & Abu Dhabi)
+  function addInstancedPalmTrees(coords, group, leafColor = '#22C55E', trunkColor = '#8B5A2B') {
+    const { getToonMaterial } = global.ToonMat;
+    const n = coords.length;
+    if (!n) return;
+    const trunkInst = new THREE.InstancedMesh(new THREE.CylinderGeometry(0.58, 1.08, 11.5, 7), getToonMaterial(trunkColor), n);
+    const frondInst = new THREE.InstancedMesh(new THREE.BoxGeometry(1.55, 0.35, 6.2), getToonMaterial(leafColor), n * 6);
+    trunkInst.name = 'track_instanced_palms_trunks';
+    frondInst.name = 'track_instanced_palms_fronds';
+
+    const dummy = new THREE.Object3D();
+    let fi = 0;
+    coords.forEach(([px, pz, scale = 1.0], idx) => {
+      const rotBase = idx * 0.85;
+      dummy.position.set(px, 5.6 * scale, pz);
+      dummy.rotation.set(0, rotBase, 0.08);
+      dummy.scale.setScalar(scale);
+      dummy.updateMatrix();
+      trunkInst.setMatrixAt(idx, dummy.matrix);
+
+      for (let f = 0; f < 6; f++) {
+        const a = rotBase + (f / 6) * Math.PI * 2;
+        dummy.position.set(
+          px + Math.sin(a) * 2.6 * scale + 0.45 * scale,
+          11.2 * scale,
+          pz + Math.cos(a) * 2.6 * scale
+        );
+        dummy.rotation.set(0, a, 0);
+        dummy.rotateX(0.36);
+        dummy.scale.setScalar(scale);
+        dummy.updateMatrix();
+        frondInst.setMatrixAt(fi++, dummy.matrix);
+      }
+    });
+    trunkInst.instanceMatrix.needsUpdate = true;
+    frondInst.instanceMatrix.needsUpdate = true;
+    group.add(trunkInst, frondInst);
+  }
+
   function buildMonacoLandmarks(frames, halfWidth, group, animators) {
     const { getToonMaterial, getPlasticGlossMaterial, addCartoonOutline } = global.ToonMat;
 
-    // Mediterranean Sea strictly south of z = -176 (zero overlap with ground or track!)
+    // Mediterranean Sea strictly south of z = -176
     const seaGeo = new THREE.PlaneGeometry(2600, 1400);
     seaGeo.computeVertexNormals();
     const sea = new THREE.Mesh(
@@ -609,14 +1158,46 @@
       })
     );
     sea.rotation.x = -Math.PI / 2;
-    sea.position.set(100, -0.24, -876); // North edge cleanly meets z = -176
+    sea.position.set(100, -0.24, -876);
     group.add(sea);
 
-    // Harbor promenade seawall cleanly bordering z = -176 (NEVER crossing the asphalt!)
     const quay = new THREE.Mesh(new THREE.BoxGeometry(1200, 0.95, 5.5), getToonMaterial('#F1E3C6'));
     quay.position.set(120, 0.05, -176);
     quay.receiveShadow = true;
     group.add(quay);
+
+    // Instanced Mediterranean Palms & Cypresses along harbor & Riviera hillsides
+    addInstancedPalmTrees([
+      [-18, -166, 0.95], [22, -168, 1.05], [62, -167, 1.0], [108, -169, 1.1],
+      [152, -167, 1.0], [198, -168, 1.05], [232, -142, 0.95], [225, -80, 0.95],
+      [218, 15, 1.0], [132, 168, 0.92], [58, 195, 1.02], [-26, 132, 0.95],
+      [-32, -62, 0.92], [52, -55, 0.96]
+    ], group, '#16A34A', '#8B5A2B');
+
+    const cypCoords = [
+      [-55, 65], [-58, 130], [-20, 215], [52, 240], [140, 238],
+      [215, 220], [242, 85], [222, -15], [112, 95], [48, 118],
+      [-55, -70], [-45, -148], [130, -58], [62, -18]
+    ];
+    const cypTrunk = new THREE.InstancedMesh(new THREE.CylinderGeometry(0.45, 0.65, 3.2, 6), getToonMaterial('#6B4423'), cypCoords.length);
+    const cypCrown = new THREE.InstancedMesh(new THREE.ConeGeometry(2.6, 12.5, 7), getToonMaterial('#15803D'), cypCoords.length);
+    cypCrown.name = 'track_instanced_cypresses';
+    const dummy = new THREE.Object3D();
+    cypCoords.forEach(([cx, cz], idx) => {
+      const sc = 0.85 + (idx % 3) * 0.16;
+      dummy.position.set(cx, 1.6 * sc, cz);
+      dummy.rotation.set(0, idx * 0.7, 0);
+      dummy.scale.setScalar(sc);
+      dummy.updateMatrix();
+      cypTrunk.setMatrixAt(idx, dummy.matrix);
+
+      dummy.position.set(cx, 8.2 * sc, cz);
+      dummy.updateMatrix();
+      cypCrown.setMatrixAt(idx, dummy.matrix);
+    });
+    cypTrunk.instanceMatrix.needsUpdate = true;
+    cypCrown.instanceMatrix.needsUpdate = true;
+    group.add(cypTrunk, cypCrown);
 
     const yachts = [];
     [
@@ -661,10 +1242,10 @@
 
     const pastelPalette = ['#FFADAD', '#FFD6A5', '#FDFFB6', '#CAFFBF', '#9BF6FF', '#FFC6FF', '#FF8FA3', '#FFE5B4'];
     [
-      [-45, 35, 24, 34, 20], [-52, 95, 26, 42, 22], [-42, 160, 22, 28, 22],
+      [-52, 55, 24, 34, 20], [-56, 112, 26, 42, 22], [-42, 165, 22, 28, 22],
       [15, 235, 30, 38, 22], [90, 265, 32, 48, 24], [175, 255, 28, 36, 22],
       [235, 195, 26, 44, 24], [248, 125, 24, 34, 20], [245, 55, 26, 38, 20],
-      [-65, -25, 26, 36, 22], [-75, -95, 28, 42, 24], [60, 70, 22, 32, 20],
+      [-72, -32, 26, 36, 22], [-75, -95, 28, 42, 24], [60, 70, 22, 32, 20],
       [85, 130, 20, 28, 18], [88, 15, 22, 26, 20]
     ].forEach(([x, z, w, h, d], idx) => {
       const bGrp = new THREE.Group();
@@ -690,13 +1271,20 @@
       group.add(bGrp);
     });
 
-    for (let i = 315; i < 351; i += 4) {
-      const f = frames[i % frames.length];
-      const arch = new THREE.Mesh(new THREE.TorusGeometry(halfWidth + 2.2, 1.35, 8, 16, Math.PI), getToonMaterial('#F1F5F9'));
-      arch.position.copy(f.pos);
-      arch.rotation.y = Math.atan2(f.tangent.x, f.tangent.z);
-      group.add(arch);
-    }
+    // Instanced Monaco Tunnel Arches
+    const archIndices = [];
+    for (let i = 315; i < 351; i += 4) archIndices.push(i);
+    const archInst = new THREE.InstancedMesh(new THREE.TorusGeometry(halfWidth + 2.2, 1.35, 8, 16, Math.PI), getToonMaterial('#F1F5F9'), archIndices.length);
+    archIndices.forEach((fi, idx) => {
+      const f = frames[fi % frames.length];
+      dummy.position.copy(f.pos);
+      dummy.rotation.set(0, Math.atan2(f.tangent.x, f.tangent.z), 0);
+      dummy.scale.set(1, 1, 1);
+      dummy.updateMatrix();
+      archInst.setMatrixAt(idx, dummy.matrix);
+    });
+    archInst.instanceMatrix.needsUpdate = true;
+    group.add(archInst);
 
     animators.push((dt, elapsed) => {
       sea.position.y = -0.24 + Math.sin(elapsed * 1.4) * 0.05;
@@ -754,7 +1342,7 @@
       gondolas.push(gPivot);
     }
 
-    [[-75, 55, 0.2], [-85, 145, -0.15], [135, -265, 0.05], [35, -275, -0.1]].forEach(([x, z, rot]) => {
+    [[-82, 55, 0.2], [-88, 145, -0.15], [135, -265, 0.05], [35, -275, -0.1]].forEach(([x, z, rot]) => {
       const hGrp = new THREE.Group();
       const arch = new THREE.Mesh(new THREE.CylinderGeometry(16, 16, 36, 14, 1, false, 0, Math.PI), getToonMaterial('#CBD5E1'));
       arch.rotation.z = Math.PI / 2; arch.rotation.y = Math.PI / 2;
@@ -767,16 +1355,46 @@
       group.add(hGrp);
     });
 
+    // Instanced British Oak & Conifer Forest (36 trees in only 3 InstancedMeshes!)
+    const oakCoords = [
+      [-45, -185], [30, 145], [160, 85], [295, -55], [275, 155], [-135, -80], [90, -85], [155, -75],
+      [-32, 245], [82, 275], [195, 238], [268, 200], [302, 55], [292, -135], [225, -205],
+      [155, -245], [-92, -238], [-145, -155], [-128, -22], [45, -115], [138, 158], [62, 148]
+    ];
+    const pineCoords = [
+      [-55, -172], [44, 158], [176, 98], [308, -32], [286, 138], [-142, -96], [106, -98],
+      [-12, 260], [115, 282], [218, 224], [312, 12], [272, -162], [-68, -252], [-132, -195]
+    ];
+    const dummy = new THREE.Object3D();
     const trunkMat = getToonMaterial('#7C4A2D');
-    const leafMat = getToonMaterial('#22C55E');
-    [[-45, -185], [30, 145], [160, 85], [295, -55], [275, 155], [-135, -80], [90, -85], [155, -75]].forEach(([tx, tz]) => {
-      const t = new THREE.Group();
-      const trunk = new THREE.Mesh(new THREE.CylinderGeometry(1.1, 1.5, 6.5, 8), trunkMat); trunk.position.y = 3.2;
-      const crown = new THREE.Mesh(new THREE.SphereGeometry(5.5, 10, 8), leafMat); crown.position.y = 8.5;
-      addCartoonOutline(crown, 1.06);
-      t.add(trunk, crown); t.position.set(tx, 0, tz);
-      group.add(t);
+    const oakLeafMat = getToonMaterial('#22C55E');
+    const pineLeafMat = getToonMaterial('#15803D');
+
+    const trunkInst = new THREE.InstancedMesh(new THREE.CylinderGeometry(1.0, 1.45, 6.2, 7), trunkMat, oakCoords.length + pineCoords.length);
+    const oakCrownInst = new THREE.InstancedMesh(new THREE.DodecahedronGeometry(5.2, 1), oakLeafMat, oakCoords.length);
+    const pineCrownInst = new THREE.InstancedMesh(new THREE.ConeGeometry(4.4, 13.5, 7), pineLeafMat, pineCoords.length);
+    oakCrownInst.name = 'track_instanced_oaks';
+    pineCrownInst.name = 'track_instanced_pines';
+
+    let ti = 0;
+    oakCoords.forEach(([tx, tz], idx) => {
+      const sc = 0.85 + (idx % 4) * 0.14;
+      dummy.position.set(tx, 3.1 * sc, tz); dummy.rotation.set(0, idx * 0.6, 0); dummy.scale.setScalar(sc); dummy.updateMatrix();
+      trunkInst.setMatrixAt(ti++, dummy.matrix);
+      dummy.position.set(tx, 8.2 * sc, tz); dummy.scale.set(sc * 1.08, sc * 0.92, sc); dummy.updateMatrix();
+      oakCrownInst.setMatrixAt(idx, dummy.matrix);
     });
+    pineCoords.forEach(([tx, tz], idx) => {
+      const sc = 0.88 + (idx % 3) * 0.16;
+      dummy.position.set(tx, 3.1 * sc, tz); dummy.rotation.set(0, idx * 0.9, 0); dummy.scale.setScalar(sc); dummy.updateMatrix();
+      trunkInst.setMatrixAt(ti++, dummy.matrix);
+      dummy.position.set(tx, 9.8 * sc, tz); dummy.scale.setScalar(sc); dummy.updateMatrix();
+      pineCrownInst.setMatrixAt(idx, dummy.matrix);
+    });
+    trunkInst.instanceMatrix.needsUpdate = true;
+    oakCrownInst.instanceMatrix.needsUpdate = true;
+    pineCrownInst.instanceMatrix.needsUpdate = true;
+    group.add(trunkInst, oakCrownInst, pineCrownInst);
 
     const RAIN_COUNT = 550;
     const rainGeo = new THREE.BufferGeometry();
@@ -812,7 +1430,7 @@
     sunDisc.lookAt(0, 20, 0);
     group.add(sunDisc);
 
-    // Yas Marina water strictly south of z = -224 (zero overlap with land or asphalt!)
+    // Yas Marina water strictly south of z = -224
     const marinaGeo = new THREE.PlaneGeometry(2600, 1300);
     marinaGeo.computeVertexNormals();
     const marina = new THREE.Mesh(
@@ -867,38 +1485,39 @@
     hotelGroup.add(bridgeWalk);
     group.add(hotelGroup);
 
+    // Instanced Neon Light Pylons (2 draw calls instead of 48!)
+    const pylonIndices = [];
+    for (let i = 0; i < frames.length; i += 24) pylonIndices.push(i);
     const pylonNeonMat = new THREE.MeshBasicMaterial({ color: '#00F5D4' });
-    const pylonPostMat = getToonMaterial('#1E293B');
-    for (let i = 0; i < frames.length; i += 24) {
-      const f = frames[i];
-      const pPos = f.pos.clone().addScaledVector(f.right, (i % 48 === 0 ? 1 : -1) * (halfWidth + 5.8));
-      const pylon = new THREE.Group();
-      const post = new THREE.Mesh(new THREE.BoxGeometry(0.8, 10.5, 0.8), pylonPostMat); post.position.y = 5.2;
-      const glowBar = new THREE.Mesh(new THREE.BoxGeometry(1.1, 3.5, 1.1), pylonNeonMat); glowBar.position.y = 9.5;
-      pylon.add(post, glowBar); pylon.position.copy(pPos);
-      group.add(pylon);
-    }
+    const pylonPostInst = new THREE.InstancedMesh(new THREE.BoxGeometry(0.8, 10.5, 0.8), getToonMaterial('#1E293B'), pylonIndices.length);
+    const pylonGlowInst = new THREE.InstancedMesh(new THREE.BoxGeometry(1.1, 3.5, 1.1), pylonNeonMat, pylonIndices.length);
+    pylonPostInst.name = 'track_instanced_pylons';
 
-    const palms = [];
-    const palmTrunkMat = getToonMaterial('#8B5A2B');
-    const palmLeafMat = getToonMaterial('#22C55E');
-    [[-25, 45], [-28, 115], [160, 160], [185, 45], [180, -45], [135, -225], [20, -230], [-115, -145], [70, 55], [90, 145], [295, 65], [295, -55]].forEach(([px, pz], idx) => {
-      const palm = new THREE.Group();
-      const trunk = new THREE.Mesh(new THREE.CylinderGeometry(0.65, 1.15, 12.5, 8), palmTrunkMat);
-      trunk.position.y = 6.2; trunk.rotation.z = 0.08;
-      palm.add(trunk);
-      const crown = new THREE.Group(); crown.position.set(0.6, 12.4, 0);
-      for (let f = 0; f < 6; f++) {
-        const frond = new THREE.Mesh(new THREE.BoxGeometry(1.6, 0.35, 6.4), palmLeafMat);
-        const a = (f / 6) * Math.PI * 2;
-        frond.position.set(Math.sin(a) * 2.8, -0.3, Math.cos(a) * 2.8);
-        frond.rotation.y = a; frond.rotation.x = 0.35;
-        crown.add(frond);
-      }
-      palm.add(crown); palm.position.set(px, 0, pz);
-      group.add(palm);
-      palms.push({ crown, phase: idx * 0.9 });
+    const dummy = new THREE.Object3D();
+    pylonIndices.forEach((fi, idx) => {
+      const f = frames[fi];
+      const pPos = f.pos.clone().addScaledVector(f.right, (fi % 48 === 0 ? 1 : -1) * (halfWidth + 5.8));
+      dummy.position.set(pPos.x, 5.2, pPos.z);
+      dummy.rotation.set(0, 0, 0);
+      dummy.scale.set(1, 1, 1);
+      dummy.updateMatrix();
+      pylonPostInst.setMatrixAt(idx, dummy.matrix);
+
+      dummy.position.set(pPos.x, 9.5, pPos.z);
+      dummy.updateMatrix();
+      pylonGlowInst.setMatrixAt(idx, dummy.matrix);
     });
+    pylonPostInst.instanceMatrix.needsUpdate = true;
+    pylonGlowInst.instanceMatrix.needsUpdate = true;
+    group.add(pylonPostInst, pylonGlowInst);
+
+    // Instanced Yas Marina Palm Groves
+    addInstancedPalmTrees([
+      [-32, 65, 1.05], [-34, 130, 1.0], [160, 160, 1.1], [185, 45, 1.0],
+      [180, -45, 1.08], [135, -212, 1.12], [20, -214, 1.05], [-115, -145, 1.0],
+      [70, 55, 1.0], [90, 145, 1.08], [295, 65, 1.1], [295, -55, 1.02],
+      [210, -212, 1.06], [-55, -212, 1.0], [15, 255, 1.04], [245, 210, 1.08]
+    ], group, '#22C55E', '#8B5A2B');
 
     const colorTmp = new THREE.Color();
     animators.push((dt, elapsed) => {
@@ -910,9 +1529,6 @@
       }
       colorTmp.setHSL((elapsed * 0.16) % 1, 0.95, 0.58);
       pylonNeonMat.color.copy(colorTmp);
-      for (let i = 0; i < palms.length; i++) {
-        palms[i].crown.rotation.z = Math.sin(elapsed * 1.8 + palms[i].phase) * 0.09;
-      }
     });
   }
 

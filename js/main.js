@@ -44,10 +44,13 @@
   let sceneMgr = null;
   let editorCtrl = null;
   let minimapCtx = null;
+  let clock = null;
   let lastFrameTime = performance.now();
   let toastTimeout = null;
   let countdownTimeout = null;
   let threeRetryCount = 0;
+  // Reusable input struct (zero GC allocations per frame inside requestAnimationFrame)
+  const effectiveInput = { left: false, right: false, accel: false, manualAccel: false, brake: false, turbo: false };
 
   // ==========================================================================
   // SAFE INITIALIZATION (UI ALWAYS BINDS FIRST — ZERO BUTTON FREEZES!)
@@ -121,6 +124,7 @@
 
     try {
       const canvas = document.getElementById('game-canvas');
+      clock = new THREE.Clock();
       sceneMgr = new global.SceneManager(canvas);
       hideEngineNotice();
       sync3DStageForCurrentScreen();
@@ -161,19 +165,19 @@
   }
 
   function mainLoop(now) {
-    const dt = Math.min(0.05, (now - lastFrameTime) / 1000);
+    // Delta-time seguro acotado a 50ms para evitar saltos de física si cae un fotograma
+    const dt = clock ? Math.min(clock.getDelta(), 0.05) : Math.min(0.05, (now - lastFrameTime) / 1000);
     lastFrameTime = now;
 
     let hudSnapshot = null;
     if (AppState.screen === 'race' && AppState.raceEngine) {
-      const effectiveInput = {
-        left: AppState.input.left,
-        right: AppState.input.right,
-        accel: AppState.input.accel || (AppState.autoAccel && !AppState.input.brake),
-        manualAccel: AppState.input.accel,
-        brake: AppState.input.brake,
-        turbo: AppState.input.turbo
-      };
+      effectiveInput.left = AppState.input.left;
+      effectiveInput.right = AppState.input.right;
+      effectiveInput.accel = AppState.input.accel || (AppState.autoAccel && !AppState.input.brake);
+      effectiveInput.manualAccel = AppState.input.accel;
+      effectiveInput.brake = AppState.input.brake;
+      effectiveInput.turbo = AppState.input.turbo;
+
       AppState.raceEngine.update(dt, effectiveInput);
       hudSnapshot = AppState.raceEngine.getHudSnapshot();
       updateRaceHUD(hudSnapshot);

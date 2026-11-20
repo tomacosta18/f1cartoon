@@ -1,7 +1,7 @@
 // ============================================================================
-// SCENEMANAGER.JS — Renderer 3D (Parche v1.1), Frustum near=0.5 / far=3500,
-//                   shadow.bias=-0.0005, Showcase Piloto+Auto, Modo Editor 3D
-//                   Interactivo 360°, Flyover, Carrera y Podio 3D
+// SCENEMANAGER.JS — Parche v1.4: ACESFilmicToneMapping (1.1), FogExp2,
+//                   Cámara de Persecución Estable con Damping FPS-Independiente
+//                   y Horizonte Nivelado (0,1,0), Cero Basura GC por Frame
 // ============================================================================
 (function (global) {
   'use strict';
@@ -21,12 +21,16 @@
       } else if (THREE.sRGBEncoding) {
         this.renderer.outputEncoding = THREE.sRGBEncoding;
       }
+      // Iluminación y color cinematográfico (ACESFilmicToneMapping, exposición 1.1)
+      this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
+      this.renderer.toneMappingExposure = 1.1;
       this.renderer.shadowMap.enabled = true;
       this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 
       this.scene = new THREE.Scene();
-      // Frustum estabilizado (near = 0.5, far = 3500) para evitar recortes y Z-fighting
+      // Frustum estabilizado (near = 0.5, far = 3500) con horizonte nivelado (0, 1, 0)
       this.camera = new THREE.PerspectiveCamera(54, window.innerWidth / window.innerHeight, 0.5, 3500);
+      this.camera.up.set(0, 1, 0);
 
       this.hemiLight = new THREE.HemisphereLight('#F8FAFC', '#1E293B', 0.42);
       this.scene.add(this.hemiLight);
@@ -74,21 +78,36 @@
       this.showcaseUserYaw = 0;
 
       // Interactive 360° Editor orbit state
-      this.editorViewMode = 'duo'; // 'duo' (Standing Driver + Car/Helmet) | 'cockpit' (Seated Helmeted Driver + Steering)
-      this.editorFocus = 'car';    // 'car' | 'driver' | 'stats'
+      this.editorViewMode = 'duo';
+      this.editorFocus = 'car';
       this.editorAutoRotate = true;
       this.editorYaw = 0.25;
       this.editorPitch = 0.24;
       this.editorZoom = 1.0;
       this.isDraggingOrbit = false;
 
-      // Track & Race state
+      // Track & Race state + pre-allocated ZERO-GC camera/animation scratch objects
       this.activeTrack = null;
       this.activeTrackId = null;
       this.raceEngine = null;
       this.cameraPreset = 0;
       this.camPosSmooth = new THREE.Vector3(0, 8, -14);
       this.camLookSmooth = new THREE.Vector3(0, 1.5, 6);
+
+      this._camUp = new THREE.Vector3(0, 1, 0);
+      this._camFollowDir = new THREE.Vector3(0, 0, 1);
+      this._camRight = new THREE.Vector3(1, 0, 0);
+      this._camDesiredPos = new THREE.Vector3();
+      this._camDesiredLook = new THREE.Vector3();
+      this._camTargetPos = new THREE.Vector3();
+      this._camTargetLook = new THREE.Vector3();
+      this._camTargetQuat = new THREE.Quaternion();
+      this._camLookMat = new THREE.Matrix4();
+      this._previewCenter = new THREE.Vector3();
+      this._previewPos = new THREE.Vector3();
+      this._previewFocusPoint = new THREE.Vector3(90, 0, 40);
+      this._podiumCamTarget = new THREE.Vector3();
+      this._podiumDummy = new THREE.Object3D();
 
       // Podium state
       this.podiumDrivers = [];
@@ -139,6 +158,7 @@
     onResize() {
       const w = window.innerWidth;
       const h = window.innerHeight;
+      this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
       this.camera.aspect = w / h;
       this.camera.updateProjectionMatrix();
       this.renderer.setSize(w, h);
@@ -386,7 +406,7 @@
       }
       const bgTint = new THREE.Color('#0E1220').lerp(new THREE.Color(team.primary), 0.16);
       this.scene.background = bgTint;
-      this.scene.fog = new THREE.Fog(bgTint, 24, 65);
+      this.scene.fog = new THREE.FogExp2(bgTint, 0.015);
       this.showcasePopTime = withPop ? 0 : 1;
     }
 
@@ -404,17 +424,22 @@
 
       this._setShadowBounds(58);
       this.scene.background = new THREE.Color(this.activeTrack.skyColor);
-      this.scene.fog = new THREE.Fog(this.activeTrack.fogColor, 260, 1450);
+      // Niebla atmosférica sutil FogExp2 en el horizonte
+      this.scene.fog = new THREE.FogExp2(this.activeTrack.fogColor, this.activeTrack.fogDensity || 0.0011);
+
+      // Luz direccional principal con sombras suaves PCFSoftShadowMap + hemisférica cálida/cielo
       this.dirLight.color.set(this.activeTrack.sunColor);
-      this.dirLight.intensity = circuitMeta.id === 'abudhabi' ? 0.78 : 0.85;
+      this.dirLight.intensity = circuitMeta.id === 'abudhabi' ? 0.78 : 0.84;
       this.dirLight.position.set(85, 115, 70);
       this.dirLight.target.position.set(0, 0, 0);
       this.dirLight.target.updateMatrixWorld();
+
       this.hemiLight.color.set(this.activeTrack.ambientColor);
-      this.hemiLight.groundColor.set('#334155');
-      this.hemiLight.intensity = circuitMeta.id === 'abudhabi' ? 0.48 : 0.56;
-      this.rimLight.color.set('#7DD3FC');
-      this.rimLight.intensity = circuitMeta.id === 'abudhabi' ? 0.34 : 0.28;
+      this.hemiLight.groundColor.set(circuitMeta.id === 'abudhabi' ? '#3B2340' : '#334155');
+      this.hemiLight.intensity = circuitMeta.id === 'abudhabi' ? 0.44 : 0.48;
+
+      this.rimLight.color.set(circuitMeta.id === 'abudhabi' ? '#F472B6' : '#93C5FD');
+      this.rimLight.intensity = circuitMeta.id === 'abudhabi' ? 0.34 : 0.22;
       this.rimLight.position.set(-40, 28, -45);
       if (this.fillLight) this.fillLight.intensity = 0.0;
     }
@@ -431,8 +456,20 @@
       this.stageRoot.add(raceEngine.root);
 
       const p = raceEngine.player;
-      this.camPosSmooth.copy(p.worldPos).addScaledVector(p.worldForward, -16).add(new THREE.Vector3(6, 9, 0));
-      this.camLookSmooth.copy(p.worldPos).addScaledVector(p.worldForward, 8);
+      this._camFollowDir.copy(p.worldForward);
+      this._camFollowDir.y = 0;
+      if (this._camFollowDir.lengthSq() < 1e-4) this._camFollowDir.set(0, 0, 1);
+      this._camFollowDir.normalize();
+
+      this.camPosSmooth.copy(p.worldPos).addScaledVector(this._camFollowDir, -10.2);
+      this.camPosSmooth.y = 4.5;
+      this.camLookSmooth.copy(p.worldPos).addScaledVector(this._camFollowDir, 12.0);
+      this.camLookSmooth.y = 1.6;
+
+      this.camera.up.set(0, 1, 0);
+      this.camera.position.copy(this.camPosSmooth);
+      this._camLookMat.lookAt(this.camPosSmooth, this.camLookSmooth, this._camUp);
+      this.camera.quaternion.setFromRotationMatrix(this._camLookMat);
     }
 
     cycleCameraPreset() {
@@ -451,7 +488,7 @@
       this._clearStage();
 
       this.scene.background = new THREE.Color('#121528');
-      this.scene.fog = new THREE.Fog('#121528', 28, 95);
+      this.scene.fog = new THREE.FogExp2('#121528', 0.014);
       this._applyStudioLighting(true);
 
       const floor = new THREE.Mesh(
@@ -572,19 +609,31 @@
       this._animateStudioEntities(dt);
 
       const isNarrow = window.innerWidth < 860;
-      let targetPos, targetLook;
       if (this.mode === 'home') {
-        targetPos = isNarrow ? new THREE.Vector3(0, 4.1, 10.6) : new THREE.Vector3(-2.6, 3.5, 9.2);
-        targetLook = isNarrow ? new THREE.Vector3(0, 1.0, 0) : new THREE.Vector3(-2.2, 1.25, 0);
+        if (isNarrow) {
+          this._camTargetPos.set(0, 4.1, 10.6);
+          this._camTargetLook.set(0, 1.0, 0);
+        } else {
+          this._camTargetPos.set(-2.6, 3.5, 9.2);
+          this._camTargetLook.set(-2.2, 1.25, 0);
+        }
       } else {
-        targetPos = isNarrow ? new THREE.Vector3(0, 4.2, 11.4) : new THREE.Vector3(2.2, 3.6, 10.0);
-        targetLook = isNarrow ? new THREE.Vector3(0, 0.5, 0) : new THREE.Vector3(1.6, 0.78, 0);
+        if (isNarrow) {
+          this._camTargetPos.set(0, 4.2, 11.4);
+          this._camTargetLook.set(0, 0.5, 0);
+        } else {
+          this._camTargetPos.set(2.2, 3.6, 10.0);
+          this._camTargetLook.set(1.6, 0.78, 0);
+        }
       }
 
-      this.camera.position.lerp(targetPos, Math.min(1, dt * 4.5));
-      this.camLookSmooth.lerp(targetLook, Math.min(1, dt * 5));
+      const posAlpha = 1 - Math.exp(-4.5 * dt);
+      const lookAlpha = 1 - Math.exp(-5.0 * dt);
+      this.camera.up.set(0, 1, 0);
+      this.camera.position.lerp(this._camTargetPos, posAlpha);
+      this.camLookSmooth.lerp(this._camTargetLook, lookAlpha);
       this.camera.lookAt(this.camLookSmooth);
-      this.camera.fov = THREE.MathUtils.lerp(this.camera.fov, 48, dt * 4);
+      this.camera.fov = THREE.MathUtils.lerp(this.camera.fov, 48, 1 - Math.exp(-4.0 * dt));
       this.camera.updateProjectionMatrix();
     }
 
@@ -601,106 +650,132 @@
       const baseRadius = (this.editorFocus === 'driver' ? 7.2 : 9.4) * this.editorZoom;
       const pitch = this.editorPitch;
 
-      // Keep subject framed clearly in the open canvas area (LEFT on desktop, TOP on mobile)
       const camY = Math.max(1.2, Math.sin(pitch) * baseRadius + 1.45);
       const camZ = Math.cos(pitch) * baseRadius;
 
-      let targetPos, targetLook;
       if (isNarrow) {
-        targetPos = new THREE.Vector3(0, camY + 0.5, camZ + 1.2);
-        targetLook = new THREE.Vector3(0, this.editorFocus === 'driver' ? 0.55 : -0.35, 0);
+        this._camTargetPos.set(0, camY + 0.5, camZ + 1.2);
+        this._camTargetLook.set(0, this.editorFocus === 'driver' ? 0.55 : -0.35, 0);
       } else {
-        // Shift look target +X so the turntable sits comfortably on the LEFT 56% of viewport
         const xOffset = this.editorFocus === 'driver' ? 1.55 : 2.15;
-        targetPos = new THREE.Vector3(xOffset, camY, camZ);
-        targetLook = new THREE.Vector3(xOffset, this.editorFocus === 'driver' ? 1.38 : 1.05, 0);
+        this._camTargetPos.set(xOffset, camY, camZ);
+        this._camTargetLook.set(xOffset, this.editorFocus === 'driver' ? 1.38 : 1.05, 0);
       }
 
-      this.camera.position.lerp(targetPos, Math.min(1, dt * 6));
-      this.camLookSmooth.lerp(targetLook, Math.min(1, dt * 6));
+      const alpha = 1 - Math.exp(-6.0 * dt);
+      this.camera.up.set(0, 1, 0);
+      this.camera.position.lerp(this._camTargetPos, alpha);
+      this.camLookSmooth.lerp(this._camTargetLook, alpha);
       this.camera.lookAt(this.camLookSmooth);
-      this.camera.fov = THREE.MathUtils.lerp(this.camera.fov, this.editorFocus === 'driver' ? 44 : 48, dt * 5);
+      this.camera.fov = THREE.MathUtils.lerp(this.camera.fov, this.editorFocus === 'driver' ? 44 : 48, 1 - Math.exp(-5.0 * dt));
       this.camera.updateProjectionMatrix();
     }
 
     _animateCircuitPreview(dt) {
       if (!this.activeTrack) return;
-      this.activeTrack.update(dt, this.elapsed, 0.5, new THREE.Vector3(90, 0, 40));
+      this.activeTrack.update(dt, this.elapsed, 0.5, this._previewFocusPoint);
 
       const id = this.activeTrack.circuitMeta.id;
-      let center = new THREE.Vector3(95, 8, 25), radius = 155, height = 62;
-      if (id === 'monaco') { center.set(110, 6, -40); radius = 165; height = 58; }
-      else if (id === 'silverstone') { center.set(95, 18, 40); radius = 140; height = 55; }
-      else if (id === 'abudhabi') { center.set(70, 14, -140); radius = 130; height = 48; }
+      let radius = 155, height = 62;
+      this._previewCenter.set(95, 8, 25);
+      if (id === 'monaco') { this._previewCenter.set(110, 6, -40); radius = 165; height = 58; }
+      else if (id === 'silverstone') { this._previewCenter.set(95, 18, 40); radius = 140; height = 55; }
+      else if (id === 'abudhabi') { this._previewCenter.set(70, 14, -140); radius = 130; height = 48; }
 
       const angle = this.elapsed * 0.22;
-      const desiredPos = new THREE.Vector3(
-        center.x + Math.cos(angle) * radius,
+      this._previewPos.set(
+        this._previewCenter.x + Math.cos(angle) * radius,
         height + Math.sin(this.elapsed * 0.5) * 6,
-        center.z + Math.sin(angle) * radius
+        this._previewCenter.z + Math.sin(angle) * radius
       );
-      this.camera.position.lerp(desiredPos, Math.min(1, dt * 2.5));
-      this.camLookSmooth.lerp(center, Math.min(1, dt * 3));
+      this.camera.up.set(0, 1, 0);
+      this.camera.position.lerp(this._previewPos, 1 - Math.exp(-2.5 * dt));
+      this.camLookSmooth.lerp(this._previewCenter, 1 - Math.exp(-3.0 * dt));
       this.camera.lookAt(this.camLookSmooth);
     }
 
+    // ========================================================================
+    // 2. CÁMARA DE PERSECUCIÓN ESTABLE EN CURVAS (DAMPING FPS-INDEPENDIENTE,
+    //    DESACOPLADA DEL CHASIS, HORIZONTE NIVELADO (0,1,0) Y CERO GC)
+    // ========================================================================
     _animateRace(dt, hud) {
       if (this.activeTrack) this.activeTrack.update(dt, this.elapsed, hud.crowdExcitement, hud.playerPos);
 
       const p = this.raceEngine.player;
-      const forward = p.worldForward;
-      const right = new THREE.Vector3().crossVectors(forward, new THREE.Vector3(0, 1, 0)).normalize();
 
-      // Track player cleanly with directional light shadow frustum so shadows stay crisp across entire circuit
+      // Track player smoothly with directional light shadow frustum
       this.dirLight.position.set(p.worldPos.x + 52, 96, p.worldPos.z + 44);
       this.dirLight.target.position.set(p.worldPos.x, 0, p.worldPos.z);
       this.dirLight.target.updateMatrixWorld();
 
-      let backDist = 9.4, upHeight = 4.2, lookAheadDist = 11;
-      if (this.cameraPreset === 1) { backDist = 12.6; upHeight = 6.0; lookAheadDist = 14; }
-      else if (this.cameraPreset === 2) { backDist = 1.4; upHeight = 2.45; lookAheadDist = 20; }
+      // Decoupled horizontal chase direction (no whiplash from chassis roll/pitch/quick inputs!)
+      const dirLambda = this.cameraPreset === 2 ? 12.0 : 4.2;
+      const dirAlpha = 1 - Math.exp(-dirLambda * dt);
+      this._camFollowDir.lerp(p.worldForward, dirAlpha);
+      this._camFollowDir.y = 0;
+      if (this._camFollowDir.lengthSq() < 1e-4) this._camFollowDir.set(0, 0, 1);
+      this._camFollowDir.normalize();
 
-      if (hud.turboActive && this.cameraPreset !== 2) { backDist += 1.4; upHeight -= 0.25; }
+      this._camRight.crossVectors(this._camFollowDir, this._camUp).normalize();
 
-      const desiredPos = p.worldPos.clone()
-        .addScaledVector(forward, -backDist)
-        .addScaledVector(right, p.steerVisual * 1.15);
-      desiredPos.y = upHeight;
+      let backDist = 10.0, upHeight = 4.35, lookAheadDist = 12.5;
+      if (this.cameraPreset === 1) { backDist = 13.0; upHeight = 6.1; lookAheadDist = 15.0; }
+      else if (this.cameraPreset === 2) { backDist = 1.35; upHeight = 2.45; lookAheadDist = 20.0; }
 
-      if (hud.turboActive || hud.moralOverdrive) {
-        desiredPos.x += (Math.random() - 0.5) * 0.11;
-        desiredPos.y += (Math.random() - 0.5) * 0.08;
+      if (hud.turboActive && this.cameraPreset !== 2) {
+        backDist += 1.05;
+        upHeight -= 0.16;
       }
 
-      const desiredLook = p.worldPos.clone().addScaledVector(forward, lookAheadDist);
-      desiredLook.y = this.cameraPreset === 2 ? 1.8 : 1.5;
+      // Compute desired chase position & look-ahead target using pre-allocated scratch vectors
+      const lateralLead = this.cameraPreset === 2 ? 0 : p.steerVisual * 0.45;
+      this._camDesiredPos.copy(p.worldPos)
+        .addScaledVector(this._camFollowDir, -backDist)
+        .addScaledVector(this._camRight, lateralLead);
+      this._camDesiredPos.y = upHeight;
 
-      const lerpRate = this.cameraPreset === 2 ? 18 : 9.5;
-      this.camPosSmooth.lerp(desiredPos, Math.min(1, dt * lerpRate));
-      this.camLookSmooth.lerp(desiredLook, Math.min(1, dt * 12));
+      this._camDesiredLook.copy(p.worldPos)
+        .addScaledVector(this._camFollowDir, lookAheadDist);
+      this._camDesiredLook.y = this.cameraPreset === 2 ? 1.85 : 1.55;
+
+      // FPS-independent exponential damping for position, lookAt target, and slerp orientation
+      const posAlpha = 1 - Math.exp(-(this.cameraPreset === 2 ? 16.0 : 5.8) * dt);
+      const lookAlpha = 1 - Math.exp(-(this.cameraPreset === 2 ? 18.0 : 7.4) * dt);
+      const quatAlpha = 1 - Math.exp(-(this.cameraPreset === 2 ? 18.0 : 7.8) * dt);
+
+      this.camPosSmooth.lerp(this._camDesiredPos, posAlpha);
+      this.camLookSmooth.lerp(this._camDesiredLook, lookAlpha);
+
+      // Keep horizon strictly level with fixed world up (0, 1, 0)
+      this.camera.up.set(0, 1, 0);
       this.camera.position.copy(this.camPosSmooth);
-      this.camera.lookAt(this.camLookSmooth);
+      this._camLookMat.lookAt(this.camPosSmooth, this.camLookSmooth, this._camUp);
+      this._camTargetQuat.setFromRotationMatrix(this._camLookMat);
+      this.camera.quaternion.slerp(this._camTargetQuat, quatAlpha);
 
-      const targetFov = 56 + hud.speedRatio * 12 + (hud.turboActive ? 9 : 0) + (hud.moralOverdrive ? 4 : 0);
-      this.camera.fov = THREE.MathUtils.lerp(this.camera.fov, targetFov, Math.min(1, dt * 6));
+      const targetFov = 54 + hud.speedRatio * 10 + (hud.turboActive ? 7 : 0) + (hud.moralOverdrive ? 3 : 0);
+      this.camera.fov = THREE.MathUtils.lerp(this.camera.fov, targetFov, 1 - Math.exp(-4.8 * dt));
       this.camera.updateProjectionMatrix();
     }
 
     _animatePodium(dt) {
       const camX = Math.sin(this.elapsed * 0.45) * 3.8;
-      this.camera.position.lerp(new THREE.Vector3(camX, 5.1, 12.2), Math.min(1, dt * 3));
+      this._podiumCamTarget.set(camX, 5.1, 12.2);
+      this.camera.up.set(0, 1, 0);
+      this.camera.position.lerp(this._podiumCamTarget, 1 - Math.exp(-3.0 * dt));
       this.camera.lookAt(0, 2.1, -0.5);
 
-      this.podiumDrivers.forEach(pd => {
+      for (let i = 0; i < this.podiumDrivers.length; i++) {
+        const pd = this.podiumDrivers[i];
         const jump = Math.abs(Math.sin(this.elapsed * 5.2 + pd.phase)) * 0.48;
         pd.standing.root.position.y = pd.baseY + jump;
         pd.standing.headPivot.rotation.z = Math.sin(this.elapsed * 6.5 + pd.phase) * 0.14;
         pd.standing.leftArm.rotation.z = 2.45 + Math.sin(this.elapsed * 8 + pd.phase) * 0.28;
         pd.standing.rightArm.rotation.z = -2.45 - Math.sin(this.elapsed * 8 + pd.phase) * 0.28;
-      });
+      }
 
       if (this.podiumConfetti) {
-        const dummy = new THREE.Object3D();
+        const dummy = this._podiumDummy;
         const data = this.podiumConfetti.data;
         for (let i = 0; i < data.length; i++) {
           const c = data[i];
@@ -710,6 +785,7 @@
           if (c.y < 0.2) { c.y = 13 + Math.random() * 4; c.x = (Math.random() - 0.5) * 18; }
           dummy.position.set(c.x, c.y, c.z);
           dummy.rotation.set(c.rx, c.ry, 0);
+          dummy.scale.set(1, 1, 1);
           dummy.updateMatrix();
           this.podiumConfetti.mesh.setMatrixAt(i, dummy.matrix);
         }
