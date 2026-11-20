@@ -84,7 +84,7 @@
       sorted.forEach((driver, gridIdx) => {
         const team = getTeamById(driver.teamId);
         const isPlayer = driver.id === this.playerDriverId;
-        const carVisual = buildF1Car(driver, team, { detailed: isPlayer });
+        const carVisual = buildF1Car(driver, team, { detailed: isPlayer, driverMode: 'seated' });
         this.root.add(carVisual.root);
 
         const row = Math.floor(gridIdx / 2);
@@ -125,33 +125,37 @@
       const isWet = this.circuitMeta.rainIntensity > 0;
       const m = racer.moralMultiplier;
 
-      const vel = Math.min(120, s.velocidad * m);
-      const ace = Math.min(120, s.aceleracion * m);
-      const man = Math.min(120, s.maniobrabilidad * m);
-      const fre = Math.min(120, s.freno * m);
-      const trb = Math.min(120, s.turbo * m);
-      const agr = Math.min(120, s.agresividad * m);
-      const tec = Math.min(120, s.tecnica * m);
-      const car = s.carisma;
+      const vel = Math.min(120, (s.velocidad ?? 85) * m);
+      const ace = Math.min(120, (s.aceleracion ?? 85) * m);
+      const crv = Math.min(120, (s.maniobrabilidad ?? 85) * m);
+      const fre = Math.min(120, (s.freno ?? 85) * m);
+      const tec = Math.min(120, (s.tecnica ?? 85) * m);
+      const car = s.carisma ?? 85;
+      const con = Math.min(120, (s.consistencia ?? s.agresividad ?? 85) * m);
+      const neu = Math.min(120, (s.neumaticos ?? s.turbo ?? 85) * m);
 
       const teamSpeedFactor = 0.88 + (teamRating / 100) * 0.16;
       const maxSpeed = (82 + (vel - 70) * 0.44) * teamSpeedFactor;
       const accel = (34 + (ace - 70) * 0.42) * teamSpeedFactor;
       const brakePower = 54 + (fre - 70) * 0.65;
-      const steerPower = 18 + (man - 70) * 0.24;
-      const turboSpeedMult = 1.20 + (trb - 70) * 0.0035;
-      const turboRecharge = 5.5 + (trb - 70) * 0.14;
+      const steerPower = 18 + (crv - 70) * 0.25;
+      const turboSpeedMult = 1.20 + ((tec * 0.55 + neu * 0.45) - 70) * 0.0036;
+      const turboRecharge = 5.5 + (neu - 70) * 0.14;
 
       const wetPenaltyBase = isWet ? this.circuitMeta.rainIntensity * 0.18 : 0;
       const techGripBonus = Math.max(0, (tec - 70) / 30);
+      const tireGripBonus = Math.max(0, (neu - 70) / 30);
+      const cornerSkillBonus = Math.max(0, (crv - 70) / 30);
       const effectiveWetPenalty = Math.max(0.015, wetPenaltyBase * (1 - techGripBonus * 0.65));
 
-      const cornerPushFactor = Math.max(0.32, (1.12 + effectiveWetPenalty * 2.2) - techGripBonus * 0.46);
-      const cornerSpeedCap = maxSpeed * Math.max(0.56, 1.0 - curvatureAbs * (0.28 - techGripBonus * 0.11 + effectiveWetPenalty * 0.45));
+      const cornerPushFactor = Math.max(0.30, (1.12 + effectiveWetPenalty * 2.2) - (techGripBonus * 0.30 + tireGripBonus * 0.22));
+      const cornerSpeedCap = maxSpeed * Math.max(0.56, 1.0 - curvatureAbs * (0.28 - (cornerSkillBonus * 0.07 + tireGripBonus * 0.05) + effectiveWetPenalty * 0.45));
+      const tireScrubFactor = Math.max(0.62, 1.15 - tireGripBonus * 0.36);
 
       return {
         maxSpeed, accel, brakePower, steerPower, turboSpeedMult, turboRecharge,
-        aggression: agr, technique: tec, charisma: car, cornerPushFactor, cornerSpeedCap, effectiveWetPenalty
+        aggression: con, consistency: con, technique: tec, charisma: car,
+        cornerPushFactor, cornerSpeedCap, effectiveWetPenalty, tireScrubFactor
       };
     }
 
@@ -263,7 +267,7 @@
       }
 
       if (curvAbs > 0.25 && r.v > perf.cornerSpeedCap && !r.turboActive) {
-        const scrub = (r.v - perf.cornerSpeedCap) * (1.2 + perf.effectiveWetPenalty * 2.5);
+        const scrub = (r.v - perf.cornerSpeedCap) * (1.2 + perf.effectiveWetPenalty * 2.5) * perf.tireScrubFactor;
         r.v = Math.max(perf.cornerSpeedCap * 0.85, r.v - scrub * dt);
       }
 
@@ -286,7 +290,8 @@
         const sign = Math.sign(r.d);
         r.d = sign * maxD;
         r.lateralVel *= -0.25;
-        r.v *= 0.965;
+        const wallRetain = THREE.MathUtils.clamp(0.955 + (perf.consistency - 70) * 0.0005, 0.945, 0.978);
+        r.v *= wallRetain;
         r.bobbleVelZ -= sign * 8;
       }
 
@@ -477,7 +482,7 @@
       r.worldPos.copy(pos);
       r.worldForward.copy(sample.tangent);
 
-      r.visual.root.position.set(pos.x, 0.04, pos.z);
+      r.visual.root.position.set(pos.x, 0.08, pos.z);
       const trackYaw = Math.atan2(sample.tangent.x, sample.tangent.z);
       const targetYawOff = -r.steerVisual * 0.17 + sample.curvature * 0.06;
       r.yawOffset = THREE.MathUtils.lerp(r.yawOffset, targetYawOff, Math.min(1, dt * 10 || 1));
@@ -492,16 +497,19 @@
       for (let i = 0; i < r.visual.wheels.length; i++) r.visual.wheels[i].rotation.x = r.wheelSpin;
       for (let i = 0; i < r.visual.frontSteerPivots.length; i++) r.visual.frontSteerPivots[i].rotation.y = -r.steerVisual * 0.42;
 
+      // Turn steering wheel + articulated gloved arms solidly in real time
+      if (r.visual.updateSteering) r.visual.updateSteering(r.steerVisual);
+
       if (dt > 0) {
-        const k = 85, damp = 7.5;
+        const k = 95, damp = 9.2;
         r.bobbleVelX += (-k * r.bobbleX - damp * r.bobbleVelX) * dt;
         r.bobbleVelZ += (-k * r.bobbleZ - damp * r.bobbleVelZ) * dt;
-        r.bobbleX = THREE.MathUtils.clamp(r.bobbleX + r.bobbleVelX * dt, -0.35, 0.35);
-        r.bobbleZ = THREE.MathUtils.clamp(r.bobbleZ + r.bobbleVelZ * dt, -0.45, 0.45);
+        r.bobbleX = THREE.MathUtils.clamp(r.bobbleX + r.bobbleVelX * dt, -0.16, 0.16);
+        r.bobbleZ = THREE.MathUtils.clamp(r.bobbleZ + r.bobbleVelZ * dt, -0.18, 0.18);
       }
       r.visual.headPivot.rotation.x = r.bobbleX;
       r.visual.headPivot.rotation.z = r.bobbleZ;
-      r.visual.headPivot.rotation.y = -r.steerVisual * 0.32;
+      r.visual.headPivot.rotation.y = -r.steerVisual * 0.28;
 
       r.visual.turboFlameGroup.visible = r.turboActive;
       if (r.turboActive) r.visual.turboFlameGroup.scale.set(1, 1, 0.85 + Math.random() * 0.45);

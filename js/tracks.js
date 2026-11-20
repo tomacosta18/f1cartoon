@@ -1,5 +1,7 @@
 // ============================================================================
 // TRACKS.JS — 3 Circuitos 3D Animados (Mónaco, Silverstone, Abu Dabi)
+//             Parche v1.1: Asfalto y=+0.08, polygonOffset, Opacidad Estricta,
+//             Escapatorias Opacas, Cero Z-Fighting ni Solapamientos
 // ============================================================================
 (function (global) {
   'use strict';
@@ -141,18 +143,48 @@
     let skyColor = '#56CCF2', fogColor = '#8DE0FF', groundColor = '#4ADE80', sunColor = '#FFFBEB', ambientColor = '#E0F2FE';
 
     if (circuitMeta.id === 'monaco') {
-      skyColor = '#38BDF8'; fogColor = '#93E4FF'; groundColor = '#D9C7A7'; sunColor = '#FFF8DC'; ambientColor = '#E0F7FF';
+      skyColor = '#38BDF8'; fogColor = '#93E4FF'; groundColor = '#C6B08E'; sunColor = '#FFF8DC'; ambientColor = '#E0F7FF';
     } else if (circuitMeta.id === 'silverstone') {
       skyColor = '#6488A8'; fogColor = '#94B2CC'; groundColor = '#3DAE5C'; sunColor = '#E2F1FF'; ambientColor = '#B8D2E8';
     } else if (circuitMeta.id === 'abudhabi') {
       skyColor = '#3B1D60'; fogColor = '#7A2E6F'; groundColor = '#E8B87D'; sunColor = '#FFB366'; ambientColor = '#C084FC';
     }
 
-    const ground = new THREE.Mesh(new THREE.CircleGeometry(720, 48), getToonMaterial(groundColor));
-    ground.rotation.x = -Math.PI / 2;
-    ground.position.y = -0.22;
-    ground.receiveShadow = true;
-    group.add(ground);
+    const groundMat = getToonMaterial(groundColor, {
+      transparent: false,
+      opacity: 1.0,
+      depthWrite: true,
+      depthTest: true,
+      side: THREE.FrontSide
+    });
+
+    // Ground strictly at y = 0.0 so track asphalt at y = +0.08 is strictly +0.08 above terrain.
+    // For Monaco & Abu Dhabi, split land cleanly at the seawall so ocean/marina NEVER overlaps terrain or asphalt.
+    if (circuitMeta.id === 'monaco') {
+      const landGeo = new THREE.PlaneGeometry(2600, 1500);
+      landGeo.computeVertexNormals();
+      const land = new THREE.Mesh(landGeo, groundMat);
+      land.rotation.x = -Math.PI / 2;
+      land.position.set(100, 0.0, 574); // South edge exactly at z = -176 (south of Monaco track)
+      land.receiveShadow = true;
+      group.add(land);
+    } else if (circuitMeta.id === 'abudhabi') {
+      const landGeo = new THREE.PlaneGeometry(2600, 1500);
+      landGeo.computeVertexNormals();
+      const land = new THREE.Mesh(landGeo, groundMat);
+      land.rotation.x = -Math.PI / 2;
+      land.position.set(80, 0.0, 526); // South edge exactly at z = -224 (south of Abu Dhabi track)
+      land.receiveShadow = true;
+      group.add(land);
+    } else {
+      const groundGeo = new THREE.CircleGeometry(1650, 64);
+      groundGeo.computeVertexNormals();
+      const ground = new THREE.Mesh(groundGeo, groundMat);
+      ground.rotation.x = -Math.PI / 2;
+      ground.position.y = 0.0;
+      ground.receiveShadow = true;
+      group.add(ground);
+    }
 
     const skyCanvas = document.createElement('canvas');
     skyCanvas.width = 32; skyCanvas.height = 256;
@@ -176,8 +208,8 @@
     const skyTex = new THREE.CanvasTexture(skyCanvas);
     setTextureSRGB(skyTex);
     const skyDome = new THREE.Mesh(
-      new THREE.SphereGeometry(680, 24, 16),
-      new THREE.MeshBasicMaterial({ map: skyTex, side: THREE.BackSide, fog: false })
+      new THREE.SphereGeometry(1900, 28, 18),
+      new THREE.MeshBasicMaterial({ map: skyTex, side: THREE.BackSide, fog: false, depthWrite: false })
     );
     group.add(skyDome);
 
@@ -187,8 +219,8 @@
     for (let i = 0; i < 18; i++) {
       const c = new THREE.Group();
       const angle = (i / 18) * Math.PI * 2;
-      const dist = 260 + (i % 3) * 75;
-      c.position.set(Math.cos(angle) * dist + 60, 95 + (i % 4) * 18, Math.sin(angle) * dist);
+      const dist = 290 + (i % 3) * 85;
+      c.position.set(Math.cos(angle) * dist + 60, 102 + (i % 4) * 20, Math.sin(angle) * dist);
       for (let p = -1; p <= 1; p++) {
         const puff = new THREE.Mesh(cloudPuffGeo, cloudMat);
         puff.position.set(p * 11, p === 0 ? 4 : 0, (p % 2) * 3);
@@ -203,51 +235,159 @@
     return { skyColor, fogColor, sunColor, ambientColor };
   }
 
-  function buildTrackRibbon(frames, halfWidth, circuitMeta, group) {
-    const { getToonMaterial, getAsphaltTexture } = global.ToonMat;
+  // Helper to construct a guaranteed upward-normal (+Y), FrontSide strip along track frames
+  function createTrackStripGeometry(frames, innerOffsetFn, outerOffsetFn, yHeight) {
     const N = frames.length;
     const positions = [];
     const uvs = [];
     const indices = [];
 
+    // Pass 1: build all ribbon vertices and UVs first
     for (let i = 0; i <= N; i++) {
       const f = frames[i % N];
-      const leftPt = f.pos.clone().addScaledVector(f.right, -halfWidth);
-      const rightPt = f.pos.clone().addScaledVector(f.right, halfWidth);
-      positions.push(leftPt.x, 0.02, leftPt.z);
-      positions.push(rightPt.x, 0.02, rightPt.z);
+      const offA = innerOffsetFn(f);
+      const offB = outerOffsetFn(f);
+      const ptA = f.pos.clone().addScaledVector(f.right, offA);
+      const ptB = f.pos.clone().addScaledVector(f.right, offB);
+      positions.push(ptA.x, yHeight, ptA.z);
+      positions.push(ptB.x, yHeight, ptB.z);
       const v = i / N;
       uvs.push(0, v, 1, v);
-      if (i < N) {
-        const a = i * 2, b = i * 2 + 1, c = (i + 1) * 2, d = (i + 1) * 2 + 1;
-        indices.push(a, b, c, b, d, c);
-      }
     }
 
-    const roadGeo = new THREE.BufferGeometry();
-    roadGeo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
-    roadGeo.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
-    roadGeo.setIndex(indices);
-    roadGeo.computeVertexNormals();
+    // Pass 2: build triangles with strictly enforced upward (+Y) FrontSide winding
+    for (let i = 0; i < N; i++) {
+      const a = i * 2;
+      const b = i * 2 + 1;
+      const c = (i + 1) * 2;
+      const d = (i + 1) * 2 + 1;
+
+      const pushUpTri = (i0, i1, i2) => {
+        const x0 = positions[i0 * 3], z0 = positions[i0 * 3 + 2];
+        const x1 = positions[i1 * 3], z1 = positions[i1 * 3 + 2];
+        const x2 = positions[i2 * 3], z2 = positions[i2 * 3 + 2];
+        // Y component of (P1 - P0) x (P2 - P0)
+        const crossY = (z1 - z0) * (x2 - x0) - (x1 - x0) * (z2 - z0);
+        if (crossY >= 0) {
+          indices.push(i0, i1, i2);
+        } else {
+          indices.push(i0, i2, i1);
+        }
+      };
+
+      pushUpTri(a, b, c);
+      pushUpTri(b, d, c);
+    }
+
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+    geo.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
+    geo.setIndex(indices);
+    geo.computeVertexNormals();
+    geo.computeBoundingBox();
+    geo.computeBoundingSphere();
+    return geo;
+  }
+
+  function buildTrackRibbon(frames, halfWidth, circuitMeta, group) {
+    const { getToonMaterial, getToonGradientMap, getAsphaltTexture } = global.ToonMat;
+    const N = frames.length;
+    const wallOffset = circuitMeta.id === 'monaco' ? halfWidth + 2.3 : halfWidth + 4.4;
+
+    // 1. ESCAPATORIAS (RUNOFF SHOULDERS) — Opaque, FrontSide, y = +0.035 (strictly below asphalt y = +0.08, above terrain y = 0.0)
+    const runoffColor = circuitMeta.id === 'abudhabi'
+      ? '#1E3A8A'
+      : circuitMeta.id === 'monaco'
+        ? '#64748B'
+        : '#475569';
+    const runoffMat = new THREE.MeshToonMaterial({
+      color: new THREE.Color(runoffColor),
+      gradientMap: getToonGradientMap(),
+      transparent: false,
+      opacity: 1.0,
+      depthWrite: true,
+      depthTest: true,
+      side: THREE.FrontSide,
+      polygonOffset: true,
+      polygonOffsetFactor: -1,
+      polygonOffsetUnits: -1
+    });
+
+    const leftRunoffGeo = createTrackStripGeometry(frames, () => -(wallOffset + 0.6), () => -halfWidth, 0.035);
+    const rightRunoffGeo = createTrackStripGeometry(frames, () => halfWidth, () => wallOffset + 0.6, 0.035);
+
+    const leftRunoff = new THREE.Mesh(leftRunoffGeo, runoffMat);
+    const rightRunoff = new THREE.Mesh(rightRunoffGeo, runoffMat);
+    leftRunoff.receiveShadow = true;
+    rightRunoff.receiveShadow = true;
+    leftRunoff.castShadow = false;
+    rightRunoff.castShadow = false;
+    leftRunoff.frustumCulled = false;
+    rightRunoff.frustumCulled = false;
+    group.add(leftRunoff, rightRunoff);
+
+    // 2. ASFALTO PRINCIPAL — Strictly elevated at y = +0.08 with polygonOffset (-1, -1), strictly opaque FrontSide
+    const roadGeo = createTrackStripGeometry(frames, () => -halfWidth, () => halfWidth, 0.08);
 
     const isWet = circuitMeta.rainIntensity > 0;
     const roadMat = isWet
-      ? new THREE.MeshPhongMaterial({ map: getAsphaltTexture(true), specular: new THREE.Color('#93C5FD'), shininess: 95 })
-      : new THREE.MeshToonMaterial({ map: getAsphaltTexture(false) });
+      ? new THREE.MeshPhongMaterial({
+          map: getAsphaltTexture(true),
+          specular: new THREE.Color('#93C5FD'),
+          shininess: 95,
+          transparent: false,
+          opacity: 1.0,
+          depthWrite: true,
+          depthTest: true,
+          side: THREE.FrontSide,
+          polygonOffset: true,
+          polygonOffsetFactor: -1,
+          polygonOffsetUnits: -1
+        })
+      : new THREE.MeshToonMaterial({
+          map: getAsphaltTexture(false),
+          gradientMap: getToonGradientMap(),
+          transparent: false,
+          opacity: 1.0,
+          depthWrite: true,
+          depthTest: true,
+          side: THREE.FrontSide,
+          polygonOffset: true,
+          polygonOffsetFactor: -1,
+          polygonOffsetUnits: -1
+        });
 
     const roadMesh = new THREE.Mesh(roadGeo, roadMat);
     roadMesh.receiveShadow = true;
+    roadMesh.castShadow = false;
+    roadMesh.frustumCulled = false;
     group.add(roadMesh);
 
+    // 3. PIANOS (KERBS) Y BARRERAS — Strictly opaque FrontSide + recalculated normals
     const kerbColorA = circuitMeta.id === 'abudhabi' ? '#00F5D4' : '#FF2A44';
     const barrierColorA = circuitMeta.id === 'abudhabi' ? '#FF007F' : circuitMeta.id === 'monaco' ? '#FF2A44' : '#2563EB';
-    const kerbGeo = new THREE.BoxGeometry(1.45, 0.24, 3.2);
+    const kerbGeo = new THREE.BoxGeometry(1.45, 0.20, 3.2);
+    kerbGeo.computeVertexNormals();
     const barrierGeo = new THREE.BoxGeometry(0.9, 1.45, 4.2);
+    barrierGeo.computeVertexNormals();
 
-    const kerbA = new THREE.InstancedMesh(kerbGeo, getToonMaterial(kerbColorA), N);
-    const kerbB = new THREE.InstancedMesh(kerbGeo, getToonMaterial('#FFFFFF'), N);
-    const barA = new THREE.InstancedMesh(barrierGeo, getToonMaterial(barrierColorA), N);
-    const barB = new THREE.InstancedMesh(barrierGeo, getToonMaterial('#FFFFFF'), N);
+    const opaqueOpts = {
+      transparent: false,
+      opacity: 1.0,
+      depthWrite: true,
+      depthTest: true,
+      side: THREE.FrontSide
+    };
+
+    const kerbA = new THREE.InstancedMesh(kerbGeo, getToonMaterial(kerbColorA, opaqueOpts), N);
+    const kerbB = new THREE.InstancedMesh(kerbGeo, getToonMaterial('#FFFFFF', opaqueOpts), N);
+    const barA = new THREE.InstancedMesh(barrierGeo, getToonMaterial(barrierColorA, opaqueOpts), N);
+    const barB = new THREE.InstancedMesh(barrierGeo, getToonMaterial('#FFFFFF', opaqueOpts), N);
+
+    kerbA.receiveShadow = true;
+    kerbB.receiveShadow = true;
+    barA.receiveShadow = true;
+    barB.receiveShadow = true;
 
     const dummy = new THREE.Object3D();
     let ka = 0, kb = 0, ba = 0, bb = 0;
@@ -257,17 +397,16 @@
       const yaw = Math.atan2(f.tangent.x, f.tangent.z);
       const isEven = (Math.floor(i / 2) % 2) === 0;
       [-1, 1].forEach(side => {
-        const kPos = f.pos.clone().addScaledVector(f.right, side * (halfWidth + 0.65));
-        dummy.position.set(kPos.x, 0.12, kPos.z);
+        const kPos = f.pos.clone().addScaledVector(f.right, side * (halfWidth + 0.68));
+        dummy.position.set(kPos.x, 0.14, kPos.z);
         dummy.rotation.set(0, yaw, 0);
         dummy.scale.set(1, 1, 1);
         dummy.updateMatrix();
         if (isEven) kerbA.setMatrixAt(ka++, dummy.matrix);
         else kerbB.setMatrixAt(kb++, dummy.matrix);
 
-        const wallOffset = circuitMeta.id === 'monaco' ? halfWidth + 2.3 : halfWidth + 4.4;
         const bPos = f.pos.clone().addScaledVector(f.right, side * wallOffset);
-        dummy.position.set(bPos.x, 0.72, bPos.z);
+        dummy.position.set(bPos.x, 0.76, bPos.z);
         dummy.updateMatrix();
         if (isEven) barA.setMatrixAt(ba++, dummy.matrix);
         else barB.setMatrixAt(bb++, dummy.matrix);
@@ -286,12 +425,25 @@
     gantry.position.copy(frame0.pos);
     gantry.rotation.y = Math.atan2(frame0.tangent.x, frame0.tangent.z);
 
+    // Finish strip sits cleanly above the y = +0.08 asphalt with stronger polygonOffset (-2, -2)
+    const finishGeo = new THREE.PlaneGeometry(trackWidth, 3.6);
+    finishGeo.computeVertexNormals();
     const finishStrip = new THREE.Mesh(
-      new THREE.PlaneGeometry(trackWidth, 3.6),
-      new THREE.MeshBasicMaterial({ map: getCheckeredTexture(8, 2) })
+      finishGeo,
+      new THREE.MeshBasicMaterial({
+        map: getCheckeredTexture(8, 2),
+        transparent: false,
+        opacity: 1.0,
+        depthWrite: true,
+        depthTest: true,
+        side: THREE.FrontSide,
+        polygonOffset: true,
+        polygonOffsetFactor: -2,
+        polygonOffsetUnits: -2
+      })
     );
     finishStrip.rotation.x = -Math.PI / 2;
-    finishStrip.position.y = 0.06;
+    finishStrip.position.y = 0.095;
     gantry.add(finishStrip);
 
     const pillarMat = getPlasticGlossMaterial(circuitMeta.themeColor);
@@ -440,28 +592,42 @@
 
   function buildMonacoLandmarks(frames, halfWidth, group, animators) {
     const { getToonMaterial, getPlasticGlossMaterial, addCartoonOutline } = global.ToonMat;
+
+    // Mediterranean Sea strictly south of z = -176 (zero overlap with ground or track!)
+    const seaGeo = new THREE.PlaneGeometry(2600, 1400);
+    seaGeo.computeVertexNormals();
     const sea = new THREE.Mesh(
-      new THREE.PlaneGeometry(520, 420),
-      getPlasticGlossMaterial('#00B4D8', { shininess: 140, specular: '#E0F7FF' })
+      seaGeo,
+      getPlasticGlossMaterial('#00B4D8', {
+        shininess: 140,
+        specular: '#E0F7FF',
+        transparent: false,
+        opacity: 1.0,
+        depthWrite: true,
+        depthTest: true,
+        side: THREE.FrontSide
+      })
     );
     sea.rotation.x = -Math.PI / 2;
-    sea.position.set(220, -0.08, -220);
+    sea.position.set(100, -0.24, -876); // North edge cleanly meets z = -176
     group.add(sea);
 
-    const quay = new THREE.Mesh(new THREE.BoxGeometry(520, 1.4, 8), getToonMaterial('#F1E3C6'));
-    quay.position.set(220, 0.3, -12);
+    // Harbor promenade seawall cleanly bordering z = -176 (NEVER crossing the asphalt!)
+    const quay = new THREE.Mesh(new THREE.BoxGeometry(1200, 0.95, 5.5), getToonMaterial('#F1E3C6'));
+    quay.position.set(120, 0.05, -176);
+    quay.receiveShadow = true;
     group.add(quay);
 
     const yachts = [];
     [
-      { x: 115, z: -215, rot: 0.4, color: '#FFFFFF', stripe: '#FF2A44', scale: 1.3 },
-      { x: 195, z: -205, rot: -0.3, color: '#FFFFFF', stripe: '#0077FF', scale: 1.5 },
-      { x: 265, z: -155, rot: 1.1, color: '#FFFDF5', stripe: '#FFD43B', scale: 1.2 },
-      { x: 245, z: -265, rot: 0.2, color: '#FFFFFF', stripe: '#00D2BE', scale: 1.65 },
-      { x: 45, z: -235, rot: -0.6, color: '#FFFFFF', stripe: '#FF8000', scale: 1.15 },
-      { x: 310, z: -95, rot: 1.5, color: '#FFFFFF', stripe: '#A855F7', scale: 1.35 },
-      { x: 155, z: -285, rot: 0.8, color: '#FFFFFF', stripe: '#22C55E', scale: 1.4 },
-      { x: -15, z: -255, rot: -0.2, color: '#FFFFFF', stripe: '#FF4F9A', scale: 1.25 }
+      { x: 115, z: -225, rot: 0.4, color: '#FFFFFF', stripe: '#FF2A44', scale: 1.3 },
+      { x: 195, z: -215, rot: -0.3, color: '#FFFFFF', stripe: '#0077FF', scale: 1.5 },
+      { x: 265, z: -205, rot: 1.1, color: '#FFFDF5', stripe: '#FFD43B', scale: 1.2 },
+      { x: 245, z: -275, rot: 0.2, color: '#FFFFFF', stripe: '#00D2BE', scale: 1.65 },
+      { x: 45, z: -245, rot: -0.6, color: '#FFFFFF', stripe: '#FF8000', scale: 1.15 },
+      { x: 315, z: -240, rot: 1.5, color: '#FFFFFF', stripe: '#A855F7', scale: 1.35 },
+      { x: 155, z: -295, rot: 0.8, color: '#FFFFFF', stripe: '#22C55E', scale: 1.4 },
+      { x: -20, z: -260, rot: -0.2, color: '#FFFFFF', stripe: '#FF4F9A', scale: 1.25 }
     ].forEach((yc, idx) => {
       const yacht = new THREE.Group();
       const hull = new THREE.Mesh(new THREE.BoxGeometry(7.5, 2.2, 18), getPlasticGlossMaterial(yc.color));
@@ -486,7 +652,7 @@
       mast.position.set(0, 6.2, -1.5);
       yacht.add(mast);
 
-      yacht.position.set(yc.x, 0.1, yc.z);
+      yacht.position.set(yc.x, 0.0, yc.z);
       yacht.rotation.y = yc.rot;
       yacht.scale.setScalar(yc.scale);
       group.add(yacht);
@@ -533,12 +699,12 @@
     }
 
     animators.push((dt, elapsed) => {
-      sea.position.y = -0.08 + Math.sin(elapsed * 1.4) * 0.14;
+      sea.position.y = -0.24 + Math.sin(elapsed * 1.4) * 0.05;
       for (let i = 0; i < yachts.length; i++) {
         const y = yachts[i];
-        y.mesh.position.y = 0.15 + Math.sin(elapsed * 2.1 + y.phase) * 0.42;
-        y.mesh.rotation.z = Math.sin(elapsed * 1.7 + y.phase) * 0.065;
-        y.mesh.rotation.x = Math.cos(elapsed * 1.4 + y.phase) * 0.04;
+        y.mesh.position.y = 0.0 + Math.sin(elapsed * 2.1 + y.phase) * 0.36;
+        y.mesh.rotation.z = Math.sin(elapsed * 1.7 + y.phase) * 0.06;
+        y.mesh.rotation.x = Math.cos(elapsed * 1.4 + y.phase) * 0.035;
         y.mesh.position.x = y.baseX + Math.sin(elapsed * y.speed + y.phase) * 9.5;
         y.mesh.position.z = y.baseZ + Math.cos(elapsed * y.speed * 0.7 + y.phase) * 6.0;
       }
@@ -641,18 +807,33 @@
 
   function buildAbuDhabiLandmarks(frames, halfWidth, group, animators) {
     const { getToonMaterial, getPlasticGlossMaterial, addCartoonOutline } = global.ToonMat;
-    const sunDisc = new THREE.Mesh(new THREE.CircleGeometry(56, 32), new THREE.MeshBasicMaterial({ color: '#FF9F43', fog: false }));
-    sunDisc.position.set(-220, 75, -360);
+    const sunDisc = new THREE.Mesh(new THREE.CircleGeometry(72, 32), new THREE.MeshBasicMaterial({ color: '#FF9F43', fog: false }));
+    sunDisc.position.set(-280, 92, -460);
     sunDisc.lookAt(0, 20, 0);
     group.add(sunDisc);
 
+    // Yas Marina water strictly south of z = -224 (zero overlap with land or asphalt!)
+    const marinaGeo = new THREE.PlaneGeometry(2600, 1300);
+    marinaGeo.computeVertexNormals();
     const marina = new THREE.Mesh(
-      new THREE.PlaneGeometry(240, 220),
-      getPlasticGlossMaterial('#1E3A8A', { shininess: 150, specular: '#F472B6' })
+      marinaGeo,
+      getPlasticGlossMaterial('#1E3A8A', {
+        shininess: 150,
+        specular: '#F472B6',
+        transparent: false,
+        opacity: 1.0,
+        depthWrite: true,
+        depthTest: true,
+        side: THREE.FrontSide
+      })
     );
     marina.rotation.x = -Math.PI / 2;
-    marina.position.set(45, -0.08, -285);
+    marina.position.set(80, -0.22, -874);
     group.add(marina);
+
+    const marinaWall = new THREE.Mesh(new THREE.BoxGeometry(1200, 0.9, 4.5), getToonMaterial('#CBD5E1'));
+    marinaWall.position.set(80, 0.05, -224);
+    group.add(marinaWall);
 
     const hf = frames[428 % frames.length];
     const hotelGroup = new THREE.Group();

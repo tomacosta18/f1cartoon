@@ -1,6 +1,7 @@
 // ============================================================================
-// SCENEMANAGER.JS — Renderer 3D, Showcase Giratorio, Flyover, Cámara de
-//                   Carrera Dinámica y Podio 3D Animado (Netflix × Switch)
+// SCENEMANAGER.JS — Renderer 3D (Parche v1.1), Frustum near=0.5 / far=3500,
+//                   shadow.bias=-0.0005, Showcase Piloto+Auto, Modo Editor 3D
+//                   Interactivo 360°, Flyover, Carrera y Podio 3D
 // ============================================================================
 (function (global) {
   'use strict';
@@ -24,25 +25,29 @@
       this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 
       this.scene = new THREE.Scene();
-      this.camera = new THREE.PerspectiveCamera(54, window.innerWidth / window.innerHeight, 0.2, 1100);
+      // Frustum estabilizado (near = 0.5, far = 3500) para evitar recortes y Z-fighting
+      this.camera = new THREE.PerspectiveCamera(54, window.innerWidth / window.innerHeight, 0.5, 3500);
 
-      this.hemiLight = new THREE.HemisphereLight('#FFFFFF', '#94A3B8', 1.2);
+      this.hemiLight = new THREE.HemisphereLight('#FFFFFF', '#64748B', 0.58);
       this.scene.add(this.hemiLight);
 
-      this.dirLight = new THREE.DirectionalLight('#FFFDF2', 1.65);
+      this.dirLight = new THREE.DirectionalLight('#FFFDF5', 0.82);
       this.dirLight.position.set(45, 75, 40);
       this.dirLight.castShadow = true;
       this.dirLight.shadow.mapSize.set(1024, 1024);
+      this.dirLight.shadow.bias = -0.0005;
+      this.dirLight.shadow.normalBias = 0.02;
       this.dirLight.shadow.camera.near = 1;
-      this.dirLight.shadow.camera.far = 260;
-      const d = 55;
+      this.dirLight.shadow.camera.far = 280;
+      const d = 58;
       this.dirLight.shadow.camera.left = -d;
       this.dirLight.shadow.camera.right = d;
       this.dirLight.shadow.camera.top = d;
       this.dirLight.shadow.camera.bottom = -d;
       this.scene.add(this.dirLight);
+      this.scene.add(this.dirLight.target);
 
-      this.rimLight = new THREE.DirectionalLight('#7DD3FC', 0.7);
+      this.rimLight = new THREE.DirectionalLight('#7DD3FC', 0.25);
       this.rimLight.position.set(-40, 28, -45);
       this.scene.add(this.rimLight);
 
@@ -52,13 +57,25 @@
       this.mode = 'home';
       this.elapsed = 0;
 
+      // Showcase & Editor stage state
       this.showcaseTurntable = null;
       this.showcaseCar = null;
+      this.showcaseDriver = null;
       this.showcaseGlowMat = null;
       this.showcaseSparkles = null;
       this.showcasePopTime = 1;
       this.showcaseUserYaw = 0;
 
+      // Interactive 360° Editor orbit state
+      this.editorViewMode = 'duo'; // 'duo' (Standing Driver + Car/Helmet) | 'cockpit' (Seated Helmeted Driver + Steering)
+      this.editorFocus = 'car';    // 'car' | 'driver' | 'stats'
+      this.editorAutoRotate = true;
+      this.editorYaw = 0.25;
+      this.editorPitch = 0.24;
+      this.editorZoom = 1.0;
+      this.isDraggingOrbit = false;
+
+      // Track & Race state
       this.activeTrack = null;
       this.activeTrackId = null;
       this.raceEngine = null;
@@ -66,6 +83,7 @@
       this.camPosSmooth = new THREE.Vector3(0, 8, -14);
       this.camLookSmooth = new THREE.Vector3(0, 1.5, 6);
 
+      // Podium state
       this.podiumDrivers = [];
       this.podiumConfetti = null;
 
@@ -74,20 +92,41 @@
     }
 
     _setupPointerOrbit() {
-      let dragging = false;
       let lastX = 0;
+      let lastY = 0;
+
       this.canvas.addEventListener('pointerdown', (e) => {
-        if (this.mode !== 'showcase' && this.mode !== 'home') return;
-        dragging = true;
+        if (this.mode !== 'showcase' && this.mode !== 'home' && this.mode !== 'editor') return;
+        this.isDraggingOrbit = true;
         lastX = e.clientX;
+        lastY = e.clientY;
+        this.canvas.setPointerCapture?.(e.pointerId);
       });
+
       window.addEventListener('pointermove', (e) => {
-        if (!dragging) return;
+        if (!this.isDraggingOrbit) return;
         const dx = e.clientX - lastX;
+        const dy = e.clientY - lastY;
         lastX = e.clientX;
-        this.showcaseUserYaw += dx * 0.012;
+        lastY = e.clientY;
+
+        if (this.mode === 'editor') {
+          this.editorYaw += dx * 0.011;
+          this.editorPitch = THREE.MathUtils.clamp(this.editorPitch + dy * 0.006, 0.08, 0.85);
+        } else {
+          this.showcaseUserYaw += dx * 0.012;
+        }
       });
-      window.addEventListener('pointerup', () => { dragging = false; });
+
+      const stopDrag = () => { this.isDraggingOrbit = false; };
+      window.addEventListener('pointerup', stopDrag);
+      window.addEventListener('pointercancel', stopDrag);
+
+      this.canvas.addEventListener('wheel', (e) => {
+        if (this.mode !== 'editor') return;
+        e.preventDefault();
+        this.editorZoom = THREE.MathUtils.clamp(this.editorZoom + Math.sign(e.deltaY) * 0.08, 0.62, 1.45);
+      }, { passive: false });
     }
 
     onResize() {
@@ -104,36 +143,94 @@
       }
       this.showcaseTurntable = null;
       this.showcaseCar = null;
+      this.showcaseDriver = null;
       this.showcaseSparkles = null;
       this.podiumDrivers = [];
       this.podiumConfetti = null;
     }
 
     enterShowcase(driver, isHome = false) {
-      const wasShowcase = this.mode === 'showcase' || this.mode === 'home';
+      const wasStudio = this.mode === 'showcase' || this.mode === 'home' || this.mode === 'editor';
       this.mode = isHome ? 'home' : 'showcase';
+      this.editorViewMode = 'duo';
       this.raceEngine = null;
       this.activeTrack = null;
       this.activeTrackId = null;
 
       const team = global.F1Data.getTeamById(driver.teamId);
-      this.dirLight.color.set('#FFFDF2');
+      this.dirLight.color.set('#FFFDF5');
+      this.dirLight.intensity = 0.84;
       this.dirLight.position.set(14, 24, 16);
-      this.hemiLight.intensity = 1.28;
+      this.dirLight.target.position.set(0, 0, 0);
+      this.dirLight.target.updateMatrixWorld();
+      this.hemiLight.color.set('#FFFFFF');
+      this.hemiLight.intensity = 0.60;
 
-      if (!wasShowcase || !this.showcaseTurntable) {
+      if (!wasStudio || !this.showcaseTurntable) {
         this._clearStage();
         this._buildShowcaseStage(team);
       }
 
-      this.updateShowcaseCar(driver);
+      this.updateShowcaseCar(driver, team, true);
+    }
+
+    enterEditorPreview(driver, team) {
+      const wasStudio = this.mode === 'showcase' || this.mode === 'home' || this.mode === 'editor';
+      this.mode = 'editor';
+      this.raceEngine = null;
+      this.activeTrack = null;
+      this.activeTrackId = null;
+
+      const resolvedTeam = team || global.F1Data.getTeamById(driver.teamId);
+      this.dirLight.color.set('#FFFDF5');
+      this.dirLight.intensity = 0.86;
+      this.dirLight.position.set(14, 24, 18);
+      this.dirLight.target.position.set(0, 0, 0);
+      this.dirLight.target.updateMatrixWorld();
+      this.hemiLight.color.set('#FFFFFF');
+      this.hemiLight.intensity = 0.62;
+
+      if (!wasStudio || !this.showcaseTurntable) {
+        this._clearStage();
+        this._buildShowcaseStage(resolvedTeam);
+      }
+
+      this.updateShowcaseCar(driver, resolvedTeam, false);
+    }
+
+    refreshEditorPreview(driver, team) {
+      if (!this.showcaseTurntable) {
+        this.enterEditorPreview(driver, team);
+        return;
+      }
+      this.updateShowcaseCar(driver, team, false);
+    }
+
+    setEditorFocus(tabName) {
+      this.editorFocus = tabName || 'car';
+    }
+
+    setEditorViewMode(viewMode, driver, team) {
+      this.editorViewMode = viewMode === 'cockpit' ? 'cockpit' : 'duo';
+      if (driver) this.updateShowcaseCar(driver, team, false);
+    }
+
+    toggleEditorAutoRotate() {
+      this.editorAutoRotate = !this.editorAutoRotate;
+      return this.editorAutoRotate;
+    }
+
+    resetEditorOrbit() {
+      this.editorYaw = 0.28;
+      this.editorPitch = 0.24;
+      this.editorZoom = 1.0;
     }
 
     _buildShowcaseStage(team) {
       const { getToonMaterial, getPlasticGlossMaterial, addCartoonOutline, getCheckeredTexture } = global.ToonMat;
 
       const studioFloor = new THREE.Mesh(
-        new THREE.CircleGeometry(46, 48),
+        new THREE.CircleGeometry(48, 48),
         getToonMaterial('#141A2C')
       );
       studioFloor.rotation.x = -Math.PI / 2;
@@ -143,7 +240,7 @@
 
       const backRing1 = new THREE.Mesh(
         new THREE.TorusGeometry(9.5, 0.22, 10, 48),
-        new THREE.MeshBasicMaterial({ color: '#00E5FF', transparent: true, opacity: 0.28 })
+        new THREE.MeshBasicMaterial({ color: '#00E5FF', transparent: true, opacity: 0.26 })
       );
       backRing1.position.set(0, 3.2, -6.5);
       this.stageRoot.add(backRing1);
@@ -152,7 +249,7 @@
       turntable.position.set(0, 0, 0);
 
       const base = new THREE.Mesh(
-        new THREE.CylinderGeometry(4.2, 4.7, 0.72, 36),
+        new THREE.CylinderGeometry(4.4, 4.9, 0.72, 40),
         getPlasticGlossMaterial('#181C28', { shininess: 140 })
       );
       base.position.y = -0.36;
@@ -161,7 +258,7 @@
       turntable.add(base);
 
       const topPlatter = new THREE.Mesh(
-        new THREE.CylinderGeometry(3.85, 3.85, 0.08, 36),
+        new THREE.CylinderGeometry(4.05, 4.05, 0.08, 40),
         new THREE.MeshPhongMaterial({ map: getCheckeredTexture(6, 6), shininess: 110 })
       );
       topPlatter.position.y = 0.02;
@@ -174,7 +271,7 @@
         emissiveIntensity: 1.5,
         roughness: 0.2
       });
-      const ledRing = new THREE.Mesh(new THREE.TorusGeometry(4.15, 0.14, 12, 48), this.showcaseGlowMat);
+      const ledRing = new THREE.Mesh(new THREE.TorusGeometry(4.35, 0.14, 12, 48), this.showcaseGlowMat);
       ledRing.rotation.x = Math.PI / 2;
       ledRing.position.y = 0.02;
       turntable.add(ledRing);
@@ -184,7 +281,7 @@
       for (let i = 0; i < 16; i++) {
         const a = (i / 16) * Math.PI * 2;
         const stud = new THREE.Mesh(studGeo, studMat);
-        stud.position.set(Math.cos(a) * 3.92, 0.12, Math.sin(a) * 3.92);
+        stud.position.set(Math.cos(a) * 4.12, 0.12, Math.sin(a) * 4.12);
         turntable.add(stud);
       }
 
@@ -192,19 +289,19 @@
       this.showcaseTurntable = turntable;
 
       const spotCone = new THREE.Mesh(
-        new THREE.ConeGeometry(5.2, 11, 24, 1, true),
-        new THREE.MeshBasicMaterial({ color: '#FFFFFF', transparent: true, opacity: 0.075, side: THREE.DoubleSide, depthWrite: false })
+        new THREE.ConeGeometry(5.4, 11.5, 24, 1, true),
+        new THREE.MeshBasicMaterial({ color: '#FFFFFF', transparent: true, opacity: 0.07, side: THREE.DoubleSide, depthWrite: false })
       );
-      spotCone.position.set(0, 5.4, 0);
+      spotCone.position.set(0, 5.6, 0);
       this.stageRoot.add(spotCone);
 
       const spGroup = new THREE.Group();
-      const spGeo = new THREE.OctahedronGeometry(0.16, 0);
+      const spGeo = new THREE.OctahedronGeometry(0.15, 0);
       const spColors = ['#FFD43B', '#00E5FF', '#E50914', '#FFFFFF', '#00F5D4'];
-      for (let i = 0; i < 24; i++) {
+      for (let i = 0; i < 22; i++) {
         const sp = new THREE.Mesh(spGeo, new THREE.MeshBasicMaterial({ color: spColors[i % spColors.length] }));
-        const a = (i / 24) * Math.PI * 2;
-        const r = 3.4 + (i % 3) * 0.9;
+        const a = (i / 22) * Math.PI * 2;
+        const r = 3.7 + (i % 3) * 0.85;
         sp.position.set(Math.cos(a) * r, 0.8 + (i % 5) * 0.65, Math.sin(a) * r);
         sp.userData = { baseY: sp.position.y, phase: i * 0.7 };
         spGroup.add(sp);
@@ -213,15 +310,46 @@
       this.showcaseSparkles = spGroup;
     }
 
-    updateShowcaseCar(driver) {
+    updateShowcaseCar(driver, teamOverride = null, withPop = true) {
       if (!this.showcaseTurntable) return;
-      if (this.showcaseCar) this.showcaseTurntable.remove(this.showcaseCar.root);
+      if (this.showcaseCar) {
+        this.showcaseTurntable.remove(this.showcaseCar.root);
+        this.showcaseCar = null;
+      }
+      if (this.showcaseDriver) {
+        this.showcaseTurntable.remove(this.showcaseDriver.root);
+        this.showcaseDriver = null;
+      }
 
-      const team = global.F1Data.getTeamById(driver.teamId);
-      this.showcaseCar = global.CarBuilder.buildF1Car(driver, team, { detailed: true });
-      this.showcaseCar.root.position.set(0, 0.06, 0);
-      this.showcaseCar.root.scale.setScalar(1.24);
-      this.showcaseTurntable.add(this.showcaseCar.root);
+      const team = teamOverride || global.F1Data.getTeamById(driver.teamId);
+
+      if (this.mode === 'editor' && this.editorViewMode === 'cockpit') {
+        // Seated helmeted driver gripping steering wheel + HANS system
+        this.showcaseCar = global.CarBuilder.buildF1Car(driver, team, {
+          detailed: true,
+          driverMode: 'seated'
+        });
+        this.showcaseCar.root.position.set(0, 0.06, 0);
+        this.showcaseCar.root.rotation.y = 0.15;
+        this.showcaseCar.root.scale.setScalar(1.22);
+        this.showcaseTurntable.add(this.showcaseCar.root);
+      } else {
+        // Heroic Duo Showcase: F1 Car (with detailed reflective helmet on Halo) + Unhelmeted Anatomical Driver beside it!
+        this.showcaseCar = global.CarBuilder.buildF1Car(driver, team, {
+          detailed: true,
+          driverMode: 'parked_with_helmet'
+        });
+        this.showcaseCar.root.position.set(0.68, 0.06, -0.22);
+        this.showcaseCar.root.rotation.y = -0.18;
+        this.showcaseCar.root.scale.setScalar(1.08);
+        this.showcaseTurntable.add(this.showcaseCar.root);
+
+        this.showcaseDriver = global.CarBuilder.buildStandingDriver(driver, team, { pose: 'hero' });
+        this.showcaseDriver.root.position.set(-1.82, 0.06, 0.96);
+        this.showcaseDriver.root.rotation.y = 0.34;
+        this.showcaseDriver.root.scale.setScalar(1.06);
+        this.showcaseTurntable.add(this.showcaseDriver.root);
+      }
 
       if (this.showcaseGlowMat) {
         this.showcaseGlowMat.color.set(team.primary);
@@ -229,8 +357,8 @@
       }
       const bgTint = new THREE.Color('#0E1220').lerp(new THREE.Color(team.primary), 0.16);
       this.scene.background = bgTint;
-      this.scene.fog = new THREE.Fog(bgTint, 22, 58);
-      this.showcasePopTime = 0;
+      this.scene.fog = new THREE.Fog(bgTint, 24, 65);
+      this.showcasePopTime = withPop ? 0 : 1;
     }
 
     enterCircuitPreview(circuitMeta) {
@@ -246,11 +374,14 @@
       this.stageRoot.add(this.activeTrack.group);
 
       this.scene.background = new THREE.Color(this.activeTrack.skyColor);
-      this.scene.fog = new THREE.Fog(this.activeTrack.fogColor, 180, 620);
+      this.scene.fog = new THREE.Fog(this.activeTrack.fogColor, 260, 1450);
       this.dirLight.color.set(this.activeTrack.sunColor);
+      this.dirLight.intensity = circuitMeta.id === 'abudhabi' ? 0.78 : 0.85;
       this.dirLight.position.set(85, 115, 70);
+      this.dirLight.target.position.set(0, 0, 0);
+      this.dirLight.target.updateMatrixWorld();
       this.hemiLight.color.set(this.activeTrack.ambientColor);
-      this.hemiLight.intensity = circuitMeta.id === 'abudhabi' ? 0.95 : 1.25;
+      this.hemiLight.intensity = circuitMeta.id === 'abudhabi' ? 0.48 : 0.56;
     }
 
     enterRace(circuitMeta, raceEngine) {
@@ -285,14 +416,17 @@
       this._clearStage();
 
       this.scene.background = new THREE.Color('#121528');
-      this.scene.fog = new THREE.Fog('#121528', 28, 85);
+      this.scene.fog = new THREE.Fog('#121528', 28, 95);
       this.dirLight.color.set('#FFFBEB');
+      this.dirLight.intensity = 0.85;
       this.dirLight.position.set(16, 28, 22);
+      this.dirLight.target.position.set(0, 0, 0);
+      this.dirLight.target.updateMatrixWorld();
       this.hemiLight.color.set('#FFFFFF');
-      this.hemiLight.intensity = 1.3;
+      this.hemiLight.intensity = 0.62;
 
       const floor = new THREE.Mesh(
-        new THREE.CircleGeometry(36, 48),
+        new THREE.CircleGeometry(38, 48),
         new THREE.MeshPhongMaterial({ map: getCheckeredTexture(12, 12), shininess: 90 })
       );
       floor.rotation.x = -Math.PI / 2;
@@ -315,8 +449,8 @@
         addCartoonOutline(block, [1.03, 1.03, 1.03]);
         this.stageRoot.add(block);
 
-        const standing = buildStandingDriver(entry.driver, entry.team);
-        standing.root.position.set(st.x, st.h + 0.02, 0.1);
+        const standing = buildStandingDriver(entry.driver, entry.team, { pose: 'podium' });
+        standing.root.position.set(st.x, st.h + 0.02, 0.12);
         this.stageRoot.add(standing.root);
 
         const cup = new THREE.Mesh(new THREE.CylinderGeometry(0.32, 0.16, 0.72, 12), getPlasticGlossMaterial(st.color, { shininess: 180 }));
@@ -326,7 +460,7 @@
 
         this.podiumDrivers.push({ standing, baseY: st.h + 0.02, phase: st.idx * 1.4 });
 
-        const car = buildF1Car(entry.driver, entry.team, { detailed: true });
+        const car = buildF1Car(entry.driver, entry.team, { detailed: true, driverMode: 'parked_with_helmet' });
         car.root.position.set(st.x * 1.65, 0.04, -5.2 - (st.idx === 0 ? 0.6 : 0));
         car.root.rotation.y = st.idx === 1 ? 0.35 : st.idx === 2 ? -0.35 : 0;
         this.stageRoot.add(car.root);
@@ -353,57 +487,108 @@
     render(dt, hudSnapshot = null) {
       this.elapsed += dt;
       if (this.mode === 'home' || this.mode === 'showcase') this._animateShowcase(dt);
+      else if (this.mode === 'editor') this._animateEditor(dt);
       else if (this.mode === 'circuit_preview') this._animateCircuitPreview(dt);
       else if (this.mode === 'race' && this.raceEngine && hudSnapshot) this._animateRace(dt, hudSnapshot);
       else if (this.mode === 'podium') this._animatePodium(dt);
       this.renderer.render(this.scene, this.camera);
     }
 
-    _animateShowcase(dt) {
-      if (this.showcaseTurntable) {
-        this.showcaseTurntable.rotation.y = this.elapsed * 0.55 + this.showcaseUserYaw;
-      }
-
+    _animateStudioEntities(dt) {
       if (this.showcaseCar) {
         this.showcasePopTime = Math.min(1, this.showcasePopTime + dt * 3.4);
         const t = this.showcasePopTime;
-        const popScale = t < 1 ? 1.24 * (1 + Math.sin(t * Math.PI * 2.1) * (1 - t) * 0.28) : 1.24;
+        const baseScale = (this.mode === 'editor' && this.editorViewMode === 'cockpit') ? 1.22 : 1.1;
+        const popScale = t < 1 ? baseScale * (1 + Math.sin(t * Math.PI * 2.1) * (1 - t) * 0.22) : baseScale;
         this.showcaseCar.root.scale.setScalar(popScale);
 
-        this.showcaseCar.bodyTiltGroup.position.y = Math.abs(Math.sin(this.elapsed * 3.2)) * 0.085;
-        this.showcaseCar.bodyTiltGroup.rotation.z = Math.sin(this.elapsed * 1.8) * 0.03;
-        this.showcaseCar.headPivot.rotation.z = Math.sin(this.elapsed * 3.8) * 0.14;
-        this.showcaseCar.headPivot.rotation.x = Math.cos(this.elapsed * 2.6) * 0.08;
-        this.showcaseCar.headPivot.rotation.y = Math.sin(this.elapsed * 1.5) * 0.22;
-        this.showcaseCar.wheels.forEach(w => { w.rotation.x += dt * 2.2; });
+        this.showcaseCar.bodyTiltGroup.position.y = Math.abs(Math.sin(this.elapsed * 2.8)) * 0.045;
+        this.showcaseCar.bodyTiltGroup.rotation.z = Math.sin(this.elapsed * 1.6) * 0.02;
+
+        if (this.mode === 'editor' && this.editorViewMode === 'cockpit') {
+          const demoSteer = Math.sin(this.elapsed * 1.45) * 0.78;
+          this.showcaseCar.updateSteering?.(demoSteer);
+          this.showcaseCar.frontSteerPivots.forEach(p => { p.rotation.y = -demoSteer * 0.42; });
+          this.showcaseCar.headPivot.rotation.y = -demoSteer * 0.26;
+          this.showcaseCar.headPivot.rotation.z = Math.sin(this.elapsed * 2.2) * 0.06;
+        }
+        this.showcaseCar.wheels.forEach(w => { w.rotation.x += dt * 1.8; });
+      }
+
+      if (this.showcaseDriver) {
+        const breath = Math.sin(this.elapsed * 2.4);
+        this.showcaseDriver.torsoGroup.position.y = breath * 0.022;
+        this.showcaseDriver.headPivot.rotation.y = Math.sin(this.elapsed * 1.35) * 0.22;
+        this.showcaseDriver.headPivot.rotation.x = Math.cos(this.elapsed * 1.9) * 0.05;
+        this.showcaseDriver.headPivot.rotation.z = Math.sin(this.elapsed * 1.7) * 0.04;
+        this.showcaseDriver.leftArm.rotation.z = 0.22 + Math.sin(this.elapsed * 2.1) * 0.04;
       }
 
       if (this.showcaseSparkles) {
         this.showcaseSparkles.rotation.y -= dt * 0.35;
         this.showcaseSparkles.children.forEach(sp => {
-          sp.position.y = sp.userData.baseY + Math.sin(this.elapsed * 2.6 + sp.userData.phase) * 0.28;
+          sp.position.y = sp.userData.baseY + Math.sin(this.elapsed * 2.6 + sp.userData.phase) * 0.26;
           sp.rotation.x += dt * 1.8;
           sp.rotation.y += dt * 2.2;
         });
       }
+    }
 
-      // Netflix × Switch Framing:
-      // Home: car shines cleanly on the RIGHT side while Hero Title & Play CTA sit on the LEFT
-      // Showcase: car shines cleanly in the UPPER-LEFT/CENTER while Stats Card sits on the RIGHT and Carousel on BOTTOM
+    _animateShowcase(dt) {
+      if (this.showcaseTurntable) {
+        this.showcaseTurntable.rotation.y = this.elapsed * 0.42 + this.showcaseUserYaw;
+      }
+      this._animateStudioEntities(dt);
+
       const isNarrow = window.innerWidth < 860;
       let targetPos, targetLook;
       if (this.mode === 'home') {
-        targetPos = isNarrow ? new THREE.Vector3(0, 4.2, 10.2) : new THREE.Vector3(-2.6, 3.6, 8.8);
-        targetLook = isNarrow ? new THREE.Vector3(0, 0.9, 0) : new THREE.Vector3(-2.2, 1.15, 0);
+        targetPos = isNarrow ? new THREE.Vector3(0, 4.1, 10.6) : new THREE.Vector3(-2.6, 3.5, 9.2);
+        targetLook = isNarrow ? new THREE.Vector3(0, 1.0, 0) : new THREE.Vector3(-2.2, 1.25, 0);
       } else {
-        targetPos = isNarrow ? new THREE.Vector3(0, 4.4, 11.2) : new THREE.Vector3(2.2, 3.8, 9.8);
-        targetLook = isNarrow ? new THREE.Vector3(0, 0.3, 0) : new THREE.Vector3(1.6, 0.55, 0);
+        targetPos = isNarrow ? new THREE.Vector3(0, 4.2, 11.4) : new THREE.Vector3(2.2, 3.6, 10.0);
+        targetLook = isNarrow ? new THREE.Vector3(0, 0.5, 0) : new THREE.Vector3(1.6, 0.78, 0);
       }
 
       this.camera.position.lerp(targetPos, Math.min(1, dt * 4.5));
       this.camLookSmooth.lerp(targetLook, Math.min(1, dt * 5));
       this.camera.lookAt(this.camLookSmooth);
       this.camera.fov = THREE.MathUtils.lerp(this.camera.fov, 48, dt * 4);
+      this.camera.updateProjectionMatrix();
+    }
+
+    _animateEditor(dt) {
+      if (this.editorAutoRotate && !this.isDraggingOrbit) {
+        this.editorYaw += dt * 0.32;
+      }
+      if (this.showcaseTurntable) {
+        this.showcaseTurntable.rotation.y = this.editorYaw;
+      }
+      this._animateStudioEntities(dt);
+
+      const isNarrow = window.innerWidth < 920;
+      const baseRadius = (this.editorFocus === 'driver' ? 7.2 : 9.4) * this.editorZoom;
+      const pitch = this.editorPitch;
+
+      // Keep subject framed clearly in the open canvas area (LEFT on desktop, TOP on mobile)
+      const camY = Math.max(1.2, Math.sin(pitch) * baseRadius + 1.45);
+      const camZ = Math.cos(pitch) * baseRadius;
+
+      let targetPos, targetLook;
+      if (isNarrow) {
+        targetPos = new THREE.Vector3(0, camY + 0.5, camZ + 1.2);
+        targetLook = new THREE.Vector3(0, this.editorFocus === 'driver' ? 0.55 : -0.35, 0);
+      } else {
+        // Shift look target +X so the turntable sits comfortably on the LEFT 56% of viewport
+        const xOffset = this.editorFocus === 'driver' ? 1.55 : 2.15;
+        targetPos = new THREE.Vector3(xOffset, camY, camZ);
+        targetLook = new THREE.Vector3(xOffset, this.editorFocus === 'driver' ? 1.38 : 1.05, 0);
+      }
+
+      this.camera.position.lerp(targetPos, Math.min(1, dt * 6));
+      this.camLookSmooth.lerp(targetLook, Math.min(1, dt * 6));
+      this.camera.lookAt(this.camLookSmooth);
+      this.camera.fov = THREE.MathUtils.lerp(this.camera.fov, this.editorFocus === 'driver' ? 44 : 48, dt * 5);
       this.camera.updateProjectionMatrix();
     }
 
@@ -434,6 +619,11 @@
       const p = this.raceEngine.player;
       const forward = p.worldForward;
       const right = new THREE.Vector3().crossVectors(forward, new THREE.Vector3(0, 1, 0)).normalize();
+
+      // Track player cleanly with directional light shadow frustum so shadows stay crisp across entire circuit
+      this.dirLight.position.set(p.worldPos.x + 52, 96, p.worldPos.z + 44);
+      this.dirLight.target.position.set(p.worldPos.x, 0, p.worldPos.z);
+      this.dirLight.target.updateMatrixWorld();
 
       let backDist = 9.4, upHeight = 4.2, lookAheadDist = 11;
       if (this.cameraPreset === 1) { backDist = 12.6; upHeight = 6.0; lookAheadDist = 14; }
@@ -468,14 +658,14 @@
     _animatePodium(dt) {
       const camX = Math.sin(this.elapsed * 0.45) * 3.8;
       this.camera.position.lerp(new THREE.Vector3(camX, 5.1, 12.2), Math.min(1, dt * 3));
-      this.camera.lookAt(0, 2.0, -0.5);
+      this.camera.lookAt(0, 2.1, -0.5);
 
       this.podiumDrivers.forEach(pd => {
-        const jump = Math.abs(Math.sin(this.elapsed * 5.2 + pd.phase)) * 0.55;
+        const jump = Math.abs(Math.sin(this.elapsed * 5.2 + pd.phase)) * 0.48;
         pd.standing.root.position.y = pd.baseY + jump;
-        pd.standing.headPivot.rotation.z = Math.sin(this.elapsed * 6.5 + pd.phase) * 0.2;
-        pd.standing.leftArm.rotation.z = 2.3 + Math.sin(this.elapsed * 8 + pd.phase) * 0.35;
-        pd.standing.rightArm.rotation.z = -2.3 - Math.sin(this.elapsed * 8 + pd.phase) * 0.35;
+        pd.standing.headPivot.rotation.z = Math.sin(this.elapsed * 6.5 + pd.phase) * 0.14;
+        pd.standing.leftArm.rotation.z = 2.45 + Math.sin(this.elapsed * 8 + pd.phase) * 0.28;
+        pd.standing.rightArm.rotation.z = -2.45 - Math.sin(this.elapsed * 8 + pd.phase) * 0.28;
       });
 
       if (this.podiumConfetti) {

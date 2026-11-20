@@ -42,6 +42,7 @@
   };
 
   let sceneMgr = null;
+  let editorCtrl = null;
   let minimapCtx = null;
   let lastFrameTime = performance.now();
   let toastTimeout = null;
@@ -69,6 +70,21 @@
     bindKeyboardControls();
     bindTouchControls();
 
+    // Initialize "Modo Lápiz" ✏️ Interactive 3D Editor
+    if (global.F1EditorController) {
+      editorCtrl = new global.F1EditorController({
+        getSceneMgr: () => sceneMgr,
+        getSelectedDriverId: () => AppState.selectedDriverId,
+        setSelectedDriverId: (id) => { AppState.selectedDriverId = id; },
+        getCurrentScreen: () => AppState.screen,
+        onCommitChanges: (driverId) => refreshAllUI(driverId),
+        onExitEditor: () => {
+          refreshAllUI(AppState.selectedDriverId);
+          sync3DStageForCurrentScreen();
+        }
+      });
+    }
+
     // Render initial driver stats immediately (even before 3D finishes init)
     selectDriver(AppState.selectedDriverId, false);
     navigateTo('home', false);
@@ -77,6 +93,19 @@
     tryInit3DEngine();
 
     requestAnimationFrame(mainLoop);
+  }
+
+  function refreshAllUI(focusDriverId = null) {
+    if (focusDriverId) AppState.selectedDriverId = focusDriverId;
+    const prevFilter = AppState.selectedTeamFilter;
+    buildTeamFilters();
+    buildDriverGrid();
+    filterDriversByTeam(prevFilter);
+    selectDriver(AppState.selectedDriverId, false);
+    updateCircuitModeUI();
+    if (AppState.gameMode === 'campaign' && AppState.lastResults.length) {
+      renderCampaignStandings();
+    }
   }
 
   function tryInit3DEngine() {
@@ -116,6 +145,10 @@
   function sync3DStageForCurrentScreen() {
     if (!sceneMgr) return;
     const driver = getDriverById(AppState.selectedDriverId);
+    if (editorCtrl && editorCtrl.isOpen) {
+      sceneMgr.enterEditorPreview(driver);
+      return;
+    }
     if (AppState.screen === 'home') {
       sceneMgr.enterShowcase(driver, true);
     } else if (AppState.screen === 'select') {
@@ -197,6 +230,8 @@
       AudioFX.stopEngine();
       if (sceneMgr) sceneMgr.enterPodium(AppState.lastResults);
     }
+
+    editorCtrl?.updateFabVisibility(screenId);
   }
 
   // ==========================================================================
@@ -344,13 +379,15 @@
       c.classList.toggle('selected', c.dataset.driver === driverId);
     });
 
-    if (sceneMgr) sceneMgr.updateShowcaseCar(driver);
+    if (sceneMgr && !(editorCtrl && editorCtrl.isOpen)) {
+      sceneMgr.updateShowcaseCar(driver);
+    }
 
     const driverOvr = getDriverOverall(driver);
     const teamOvr = team.rating;
 
     document.getElementById('stat-driver-name').textContent = driver.name;
-    document.getElementById('stat-driver-meta').innerHTML = `${driver.flag} <strong>#${driver.number}</strong> · ${driver.tagline}`;
+    document.getElementById('stat-driver-meta').innerHTML = `${driver.flag} <strong>${driver.short} #${driver.number}</strong> · ${driver.tagline}`;
 
     const teamBadge = document.getElementById('stat-team-badge');
     teamBadge.textContent = `${team.country} ${team.name}`;
@@ -397,7 +434,7 @@
     const nextBtn = document.getElementById('btn-select-next');
     if (AppState.gameMode === 'campaign') {
       badge.textContent = '🏆 MODO CAMPAÑA · 3 GRANDES PREMIOS';
-      nextBtn.textContent = '▶ CALENDARIO CAMPAÑA';
+      nextBtn.textContent = '▶ HUB DE CAMPAÑA';
     } else {
       badge.textContent = '⚡ CARRERA LIBRE';
       nextBtn.textContent = '▶ ELEGIR CIRCUITO';
@@ -405,7 +442,7 @@
   }
 
   // ==========================================================================
-  // SCREEN 3: CIRCUIT SELECTION (NETFLIX EPISODES RAIL)
+  // SCREEN 3: CIRCUIT SELECTION / CAMPAIGN HUB (NETFLIX EPISODES RAIL)
   // ==========================================================================
   function buildCircuitCards() {
     const container = document.getElementById('circuit-cards');
@@ -456,13 +493,20 @@
     const subEl = document.getElementById('circuit-screen-sub');
     const lapsWrap = document.getElementById('laps-selector-wrap');
     const launchBtn = document.getElementById('btn-start-race');
+    const activeDriverEl = document.getElementById('circuit-active-driver');
+
+    const driver = getDriverById(AppState.selectedDriverId);
+    const team = getTeamById(driver.teamId);
+    if (activeDriverEl) {
+      activeDriverEl.innerHTML = `<span class="pill-dot" style="background:${team.primary}"></span>${driver.flag} <strong>${driver.short} #${driver.number}</strong> · ${team.name} · OVR ${getDriverOverall(driver)}`;
+    }
 
     if (AppState.gameMode === 'campaign') {
       const gp = CIRCUITS[AppState.campaign.roundIndex];
       AppState.selectedCircuitId = gp.id;
       highlightCircuitCard(gp.id);
 
-      titleEl.textContent = `🏆 Campaña · Ronda ${AppState.campaign.roundIndex + 1} de 3`;
+      titleEl.textContent = `🏆 Hub de Campaña · Ronda ${AppState.campaign.roundIndex + 1} de 3`;
       subEl.textContent = `${gp.fullName} · ${gp.weatherLabel}`;
       lapsWrap.style.display = 'none';
       launchBtn.textContent = `🚦 ¡CORRER EN ${gp.name.toUpperCase()}!`;

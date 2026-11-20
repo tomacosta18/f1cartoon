@@ -53,7 +53,7 @@
           <span class="nf-match">99% ADRENALINA</span>
           <span class="nf-tag">2026</span>
           <span class="nf-tag-outline">22 PILOTOS</span>
-          <span class="nf-tag-outline">3D TOON</span>
+          <span class="nf-tag-outline">PARCHE v1.1</span>
         </div>
 
         <h1 class="nf-hero-title">
@@ -61,7 +61,7 @@
         </h1>
 
         <p class="nf-hero-desc">
-          Carreras arcade 3D al estilo LEGO Switch con pilotos cabezones, 8 atributos con impacto real, barra de Turbo y Moral de la hinchada en Mónaco, Silverstone y Abu Dabi.
+          Carreras arcade 3D estilo Nintendo Switch con pilotos estilizados, casco y volante articulado, 8 atributos con impacto real, Editor 3D en vivo, Turbo y Moral en Mónaco, Silverstone y Abu Dabi.
         </p>
 
         <div class="nf-hero-actions">
@@ -168,6 +168,7 @@
       </div>
 
       <div class="subbar-right">
+        <span id="circuit-active-driver" class="campaign-driver-pill"></span>
         <span id="circuit-screen-sub" class="subbar-hint">Vista aérea 3D en vivo</span>
         <button class="icon-pill js-mute-btn" type="button" title="Sonido">🔊</button>
       </div>
@@ -371,6 +372,145 @@
     </div>
   </section>
 
+  <!-- ====================================================================
+       FLOATING "MODO LÁPIZ" ✏️ BUTTON (Home, Driver Select, Campaign Hub)
+       ==================================================================== -->
+  <button id="btn-floating-editor" class="floating-pencil-fab" type="button" title="Abrir Editor 3D (Auto, Piloto y Estadísticas)" aria-label="Editor 3D Modo Lápiz">
+    <span class="fab-pencil-ico" aria-hidden="true">✏️</span>
+    <span class="fab-pencil-lbl">EDITOR</span>
+  </button>
+
+  <!-- ====================================================================
+       INTERACTIVE 3D STUDIO EDITOR ("MODO LÁPIZ" ✏️)
+       ==================================================================== -->
+  <div id="editor-overlay" class="editor-overlay" role="dialog" aria-modal="true" aria-label="Estudio de Personalización 3D">
+    <!-- Live 3D Stage Controls (Floating over the interactive 3D canvas area) -->
+    <div class="editor-stage-controls">
+      <div class="ed-stage-pills">
+        <button id="btn-ed-view-duo" class="ed-stage-btn active" type="button">👤 Piloto + Auto</button>
+        <button id="btn-ed-view-cockpit" class="ed-stage-btn" type="button">🏎️ En Cabina (Casco)</button>
+        <button id="btn-ed-autospin" class="ed-stage-btn active" type="button" title="Activar/Pausar giro automático">🔄 Giro</button>
+        <button id="btn-ed-resetcam" class="ed-stage-btn" type="button" title="Centrar cámara 3D">🎯 Centrar</button>
+      </div>
+      <div class="ed-orbit-hint">↔ Arrastra para rotar 360° · Rueda para zoom</div>
+    </div>
+
+    <!-- Right-side Switch-style Studio Drawer -->
+    <aside class="editor-drawer">
+      <header class="ed-header">
+        <div class="ed-header-top">
+          <div class="ed-title-wrap">
+            <span class="ed-mode-pill">✏️ MODO LÁPIZ</span>
+            <h2>Estudio 3D en Vivo</h2>
+          </div>
+          <div class="ed-header-right">
+            <div class="ed-ovr-mini">
+              <span>OVR</span>
+              <strong id="ed-ovr-badge">91</strong>
+            </div>
+            <button id="btn-editor-close" class="ed-close-btn" type="button" title="Cerrar editor" aria-label="Cerrar">✕</button>
+          </div>
+        </div>
+
+        <div class="ed-driver-switcher">
+          <label for="ed-driver-select" class="ed-switcher-lbl">Editando:</label>
+          <select id="ed-driver-select" class="ed-select"></select>
+        </div>
+
+        <nav class="ed-tabs" role="tablist">
+          <button type="button" class="ed-tab-btn active" data-ed-tab="car" role="tab">🏎️ Auto</button>
+          <button type="button" class="ed-tab-btn" data-ed-tab="driver" role="tab">🧑‍🚀 Piloto</button>
+          <button type="button" class="ed-tab-btn" data-ed-tab="stats" role="tab">📊 Stats</button>
+        </nav>
+      </header>
+
+      <div id="ed-toast" class="ed-toast" role="status" aria-live="polite"></div>
+
+      <div class="ed-body">
+        <!-- PESTAÑA 1: AUTO Y ESCUDERÍA -->
+        <div id="ed-pane-car" class="ed-pane active">
+          <div class="ed-section">
+            <div class="ed-grid-2">
+              <div class="ed-field">
+                <label for="ed-team-name" class="ed-label">Nombre del Equipo</label>
+                <input id="ed-team-name" class="ed-input" type="text" maxlength="24" placeholder="Ej. McLaren" />
+              </div>
+              <div class="ed-field">
+                <label for="ed-driver-number" class="ed-label">Número del Auto (1–99)</label>
+                <input id="ed-driver-number" class="ed-input" type="number" min="1" max="99" value="4" />
+              </div>
+            </div>
+          </div>
+
+          <div class="ed-section">
+            <h4 class="ed-sec-title">🎨 Pintura y Materiales 3D</h4>
+            <div id="ed-car-colors" class="ed-color-stack"></div>
+          </div>
+        </div>
+
+        <!-- PESTAÑA 2: PILOTO Y APARIENCIA -->
+        <div id="ed-pane-driver" class="ed-pane">
+          <div class="ed-section">
+            <h4 class="ed-sec-title">🪪 Identidad del Piloto</h4>
+            <div class="ed-field">
+              <label for="ed-driver-name" class="ed-label">Nombre Completo</label>
+              <input id="ed-driver-name" class="ed-input" type="text" maxlength="26" placeholder="Ej. Franco Colapinto" />
+            </div>
+            <div class="ed-grid-2">
+              <div class="ed-field">
+                <label for="ed-driver-short" class="ed-label">Siglas HUD (3 letras)</label>
+                <input id="ed-driver-short" class="ed-input ed-input-upper" type="text" maxlength="3" placeholder="COL" />
+              </div>
+              <div class="ed-field">
+                <label for="ed-driver-flag" class="ed-label">Nacionalidad</label>
+                <select id="ed-driver-flag" class="ed-select"></select>
+              </div>
+            </div>
+          </div>
+
+          <div class="ed-section">
+            <h4 class="ed-sec-title">💇 Apariencia (Menú y Podio)</h4>
+            <div class="ed-field">
+              <span class="ed-label">Estilo de Cabello</span>
+              <div id="ed-hair-styles" class="ed-chip-grid"></div>
+            </div>
+            <div class="ed-field">
+              <span class="ed-label">Barba / Vello Facial</span>
+              <div id="ed-beard-styles" class="ed-chip-grid"></div>
+            </div>
+            <div id="ed-driver-colors" class="ed-color-stack"></div>
+          </div>
+
+          <div class="ed-section">
+            <h4 class="ed-sec-title">⛑️ Casco y Visera Polarizada</h4>
+            <div id="ed-helmet-colors" class="ed-color-stack"></div>
+          </div>
+        </div>
+
+        <!-- PESTAÑA 3: ESTADÍSTICAS (1 A 99) -->
+        <div id="ed-pane-stats" class="ed-pane">
+          <div class="ed-ovr-hero">
+            <div>
+              <div class="ed-ovr-hero-lbl">MEDIA GENERAL (OVR)</div>
+              <span id="ed-stats-tier" class="ed-tier-pill tier-elite">🔥 ÉLITE MUNDIAL</span>
+            </div>
+            <div id="ed-stats-ovr-big" class="ed-ovr-hero-num">91</div>
+          </div>
+
+          <div class="ed-section">
+            <h4 class="ed-sec-title">⚙️ Atributos en Pista (1 a 99)</h4>
+            <div id="ed-stats-sliders" class="ed-sliders-stack"></div>
+          </div>
+        </div>
+      </div>
+
+      <footer class="ed-footer">
+        <button id="btn-editor-restore" class="ed-btn-restore" type="button">↩️ Restaurar Originales</button>
+        <button id="btn-editor-save" class="nf-btn nf-btn-go ed-btn-save" type="button">💾 Guardar Cambios</button>
+      </footer>
+    </aside>
+  </div>
+
   <!-- Deterministic classic scripts (works offline/file:// AND http/Netlify!) -->
   <script src="js/data.js"></script>
   <script src="js/audio.js"></script>
@@ -379,6 +519,7 @@
   <script src="js/tracks.js"></script>
   <script src="js/raceEngine.js"></script>
   <script src="js/sceneManager.js"></script>
+  <script src="js/editor.js"></script>
   <script src="js/main.js"></script>
 </body>
 </html>
