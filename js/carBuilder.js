@@ -1766,6 +1766,52 @@
       if (wp.front) frontSteerPivots.push(pivot);
     });
 
+    // --- PARCHE v1.5: SUBTLE 3D REAR PROXIMITY RADAR ARC BEHIND REAR WING ---
+    // Car faces +Z => +X is driver LEFT (-d), -X is driver RIGHT (+d), -Z is BEHIND.
+    // RingGeometry rotated -PI/2 around X maps (cos θ, sin θ, 0) -> (cos θ, 0, -sin θ):
+    //   θ ∈ [0.30, 1.08] => rear-LEFT (+X, -Z)
+    //   θ ∈ [1.16, 1.98] => straight BEHIND (-Z)
+    //   θ ∈ [2.06, 2.84] => rear-RIGHT (-X, -Z)
+    let rearRadarArc = null;
+    if (detailed) {
+      const arcGroup = new THREE.Group();
+      arcGroup.name = 'rear_proximity_radar_arc';
+      arcGroup.position.set(0, 0.24, -1.62);
+      arcGroup.visible = false;
+
+      const makeSector = (thetaStart, thetaLen, name) => {
+        const geo = new THREE.RingGeometry(1.32, 1.66, 14, 1, thetaStart, thetaLen);
+        const mat = new THREE.MeshBasicMaterial({
+          color: '#F59E0B',
+          transparent: true,
+          opacity: 0.0,
+          side: THREE.DoubleSide,
+          depthWrite: false
+        });
+        const mesh = new THREE.Mesh(geo, mat);
+        mesh.name = name;
+        mesh.rotation.x = -Math.PI / 2;
+        mesh.visible = false;
+        arcGroup.add(mesh);
+        return { mesh, mat };
+      };
+
+      const leftSec = makeSector(0.30, 0.78, 'radar_arc_left');
+      const centerSec = makeSector(1.16, 0.82, 'radar_arc_center');
+      const rightSec = makeSector(2.06, 0.78, 'radar_arc_right');
+
+      root.add(arcGroup);
+      rearRadarArc = {
+        group: arcGroup,
+        left: leftSec.mesh,
+        center: centerSec.mesh,
+        right: rightSec.mesh,
+        leftMat: leftSec.mat,
+        centerMat: centerSec.mat,
+        rightMat: rightSec.mat
+      };
+    }
+
     return {
       root,
       bodyTiltGroup,
@@ -1775,6 +1821,7 @@
       frontSteerPivots,
       turboFlameGroup,
       moralAura,
+      rearRadarArc,
       updateSteering
     };
   }

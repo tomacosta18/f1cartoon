@@ -1,6 +1,6 @@
 // ============================================================================
-// DATA.JS — Oficial 22 Pilotos, 11 Escuderías, 8 Atributos, 3 Circuitos
-//           + Sistema de Persistencia localStorage (Parche v1.1)
+// DATA.JS — Oficial 22 Pilotos, 11 Escuderías, 10 Atributos (Parche v1.5:
+//           + Adelantamiento y Defensa), 3 Circuitos + Persistencia localStorage
 // (Script clásico compatible con file:// y HTTP/Netlify)
 // ============================================================================
 (function (global) {
@@ -11,13 +11,15 @@
 
   const STAT_META = [
     { key: 'velocidad', label: 'Velocidad Punta', short: 'VEL', icon: '⚡', color: '#FF3B5C', desc: 'Velocidad máxima en rectas y rebufo' },
-    { key: 'aceleracion', label: 'Aceleración', short: 'ACE', icon: '🚀', color: '#FF922B', desc: 'Salida desde parado y tracción al salir de curvas' },
+    { key: 'aceleracion', label: 'Aceleración', short: 'ACE', icon: '🚀', color: '#FF922B', desc: 'Salida progresiva desde parado y tracción en marchas bajas' },
     { key: 'maniobrabilidad', label: 'Paso por Curva', short: 'CRV', icon: '🎯', color: '#FFD43B', desc: 'Agilidad de dirección y velocidad en vértices' },
     { key: 'freno', label: 'Frenada', short: 'FRE', icon: '🛑', color: '#22C55E', desc: 'Frenada tardía y estabilidad al apurar curvas' },
     { key: 'tecnica', label: 'Técnica', short: 'TEC', icon: '🌧️', color: '#A855F7', desc: 'Control en lluvia, curvas cerradas y potencia Turbo' },
     { key: 'carisma', label: 'Carisma', short: 'CAR', icon: '⭐', color: '#F472B6', desc: 'Apoyo de la hinchada y carga de Moral' },
-    { key: 'consistencia', label: 'Consistencia', short: 'CON', icon: '🏆', color: '#3B82F6', desc: 'Ritmo constante, adelantamientos limpios y recuperación' },
-    { key: 'neumaticos', label: 'Gestión de Neumáticos', short: 'NEU', icon: '🛞', color: '#00E5FF', desc: 'Agarre sostenido en curva y recarga eficiente del Turbo' }
+    { key: 'consistencia', label: 'Consistencia', short: 'CON', icon: '🏆', color: '#3B82F6', desc: 'Ritmo constante, limpieza y recuperación en carrera' },
+    { key: 'neumaticos', label: 'Gestión de Neumáticos', short: 'NEU', icon: '🛞', color: '#00E5FF', desc: 'Agarre sostenido en curva y recarga eficiente del Turbo' },
+    { key: 'adelantamiento', label: 'Adelantamiento', short: 'ADE', icon: '⚔️', color: '#F97316', desc: 'Velocidad de carga de la barra táctica ADELANTAR en rectas' },
+    { key: 'defensa', label: 'Defensa', short: 'DEF', icon: '🛡️', color: '#10B981', desc: 'Estabilidad lateral al cubrir la línea y resistencia al ataque rival' }
   ];
 
   const NATIONALITIES = [
@@ -91,112 +93,112 @@
   const DEFAULT_DRIVERS = [
     {
       id: 'norris', name: 'Lando Norris', short: 'NOR', number: 4, teamId: 'mclaren', flag: '🇬🇧', tagline: 'Rey del Ritmo Papaya',
-      stats: { velocidad: 93, aceleracion: 92, maniobrabilidad: 93, freno: 90, tecnica: 91, carisma: 95, consistencia: 90, neumaticos: 91 },
+      stats: { velocidad: 93, aceleracion: 92, maniobrabilidad: 93, freno: 90, tecnica: 91, carisma: 95, consistencia: 90, neumaticos: 91, adelantamiento: 92, defensa: 90 },
       look: { skin: '#F6C8A8', hairColor: '#5B4028', hairStyle: 'curly', beard: 'none', browStyle: 'playful', helmetMain: '#D8FF00', helmetStripe: '#111111', helmetAccent: '#00D2FF', visor: '#111827' }
     },
     {
       id: 'russell', name: 'George Russell', short: 'RUS', number: 63, teamId: 'mercedes', flag: '🇬🇧', tagline: 'Mr. Consistencia',
-      stats: { velocidad: 91, aceleracion: 90, maniobrabilidad: 91, freno: 91, tecnica: 91, carisma: 86, consistencia: 93, neumaticos: 89 },
+      stats: { velocidad: 91, aceleracion: 90, maniobrabilidad: 91, freno: 91, tecnica: 91, carisma: 86, consistencia: 93, neumaticos: 89, adelantamiento: 90, defensa: 92 },
       look: { skin: '#F7C9AD', hairColor: '#5C4430', hairStyle: 'swept', beard: 'none', browStyle: 'sharp', helmetMain: '#1E90FF', helmetStripe: '#00F5D4', helmetAccent: '#FFFFFF', visor: '#0F172A' }
     },
     {
       id: 'antonelli', name: 'Kimi Antonelli', short: 'ANT', number: 12, teamId: 'mercedes', flag: '🇮🇹', tagline: 'Prodigio Italiano',
-      stats: { velocidad: 87, aceleracion: 88, maniobrabilidad: 87, freno: 83, tecnica: 84, carisma: 88, consistencia: 83, neumaticos: 84 },
+      stats: { velocidad: 87, aceleracion: 88, maniobrabilidad: 87, freno: 83, tecnica: 84, carisma: 88, consistencia: 83, neumaticos: 84, adelantamiento: 88, defensa: 81 },
       look: { skin: '#F3C1A0', hairColor: '#3B281B', hairStyle: 'curly', beard: 'none', browStyle: 'happy', helmetMain: '#0047AB', helmetStripe: '#00FFCC', helmetAccent: '#FF2A44', visor: '#00B4D8' }
     },
     {
       id: 'leclerc', name: 'Charles Leclerc', short: 'LEC', number: 16, teamId: 'ferrari', flag: '🇲🇨', tagline: 'Príncipe de Mónaco',
-      stats: { velocidad: 94, aceleracion: 93, maniobrabilidad: 94, freno: 92, tecnica: 93, carisma: 95, consistencia: 91, neumaticos: 90 },
+      stats: { velocidad: 94, aceleracion: 93, maniobrabilidad: 94, freno: 92, tecnica: 93, carisma: 95, consistencia: 91, neumaticos: 90, adelantamiento: 95, defensa: 91 },
       look: { skin: '#F2BF9B', hairColor: '#4A3422', hairStyle: 'swept', beard: 'stubble', browStyle: 'sharp', helmetMain: '#E80020', helmetStripe: '#FFFFFF', helmetAccent: '#FFD700', visor: '#1E1B4B' }
     },
     {
       id: 'lawson', name: 'Liam Lawson', short: 'LAW', number: 30, teamId: 'racingbulls', flag: '🇳🇿', tagline: 'Duelo sin Miedo',
-      stats: { velocidad: 84, aceleracion: 85, maniobrabilidad: 84, freno: 83, tecnica: 82, carisma: 83, consistencia: 84, neumaticos: 83 },
+      stats: { velocidad: 84, aceleracion: 85, maniobrabilidad: 84, freno: 83, tecnica: 82, carisma: 83, consistencia: 84, neumaticos: 83, adelantamiento: 87, defensa: 84 },
       look: { skin: '#F7C9A8', hairColor: '#B5894A', hairStyle: 'spiky', beard: 'none', browStyle: 'fierce', helmetMain: '#FFFFFF', helmetStripe: '#FF3399', helmetAccent: '#111827', visor: '#EC4899' }
     },
     {
       id: 'hulkenberg', name: 'Nico Hülkenberg', short: 'HUL', number: 27, teamId: 'audi', flag: '🇩🇪', tagline: 'Veterano Preciso',
-      stats: { velocidad: 86, aceleracion: 84, maniobrabilidad: 86, freno: 87, tecnica: 88, carisma: 86, consistencia: 88, neumaticos: 87 },
+      stats: { velocidad: 86, aceleracion: 84, maniobrabilidad: 86, freno: 87, tecnica: 88, carisma: 86, consistencia: 88, neumaticos: 87, adelantamiento: 85, defensa: 89 },
       look: { skin: '#F8CCA8', hairColor: '#D4A857', hairStyle: 'swept', beard: 'stubble', browStyle: 'sharp', helmetMain: '#1E242B', helmetStripe: '#FF2442', helmetAccent: '#E2E8F0', visor: '#111827' }
     },
     {
       id: 'hadjar', name: 'Isack Hadjar', short: 'HAD', number: 6, teamId: 'redbull', flag: '🇫🇷', tagline: 'Chispa Eléctrica',
-      stats: { velocidad: 86, aceleracion: 87, maniobrabilidad: 85, freno: 82, tecnica: 83, carisma: 84, consistencia: 83, neumaticos: 84 },
+      stats: { velocidad: 86, aceleracion: 87, maniobrabilidad: 85, freno: 82, tecnica: 83, carisma: 84, consistencia: 83, neumaticos: 84, adelantamiento: 87, defensa: 81 },
       look: { skin: '#DDA17A', hairColor: '#1E1A18', hairStyle: 'curly', beard: 'stubble', browStyle: 'fierce', helmetMain: '#1A2B6D', helmetStripe: '#FFD100', helmetAccent: '#FF1E42', visor: '#FACC15' }
     },
     {
       id: 'bearman', name: 'Oliver Bearman', short: 'BEA', number: 87, teamId: 'haas', flag: '🇬🇧', tagline: 'Oso Veloz',
-      stats: { velocidad: 84, aceleracion: 85, maniobrabilidad: 84, freno: 82, tecnica: 82, carisma: 85, consistencia: 83, neumaticos: 83 },
+      stats: { velocidad: 84, aceleracion: 85, maniobrabilidad: 84, freno: 82, tecnica: 82, carisma: 85, consistencia: 83, neumaticos: 83, adelantamiento: 86, defensa: 82 },
       look: { skin: '#F8CBB0', hairColor: '#6D4C32', hairStyle: 'curly', beard: 'none', browStyle: 'happy', helmetMain: '#FFFFFF', helmetStripe: '#0055CC', helmetAccent: '#E6002B', visor: '#1D4ED8' }
     },
     {
       id: 'alonso', name: 'Fernando Alonso', short: 'ALO', number: 14, teamId: 'astonmartin', flag: '🇪🇸', tagline: 'El Nano · Maestro Táctico',
-      stats: { velocidad: 90, aceleracion: 92, maniobrabilidad: 93, freno: 94, tecnica: 96, carisma: 97, consistencia: 95, neumaticos: 94 },
+      stats: { velocidad: 90, aceleracion: 92, maniobrabilidad: 93, freno: 94, tecnica: 96, carisma: 97, consistencia: 95, neumaticos: 94, adelantamiento: 94, defensa: 97 },
       look: { skin: '#E6B28A', hairColor: '#3A281D', hairStyle: 'wavy', beard: 'beard', browStyle: 'fierce', helmetMain: '#00A8E8', helmetStripe: '#FFD100', helmetAccent: '#FF2A44', visor: '#0284C7' }
     },
     {
       id: 'albon', name: 'Alex Albon', short: 'ALB', number: 23, teamId: 'williams', flag: '🇹🇭', tagline: 'Defensa de Acero',
-      stats: { velocidad: 87, aceleracion: 86, maniobrabilidad: 88, freno: 87, tecnica: 88, carisma: 90, consistencia: 88, neumaticos: 89 },
+      stats: { velocidad: 87, aceleracion: 86, maniobrabilidad: 88, freno: 87, tecnica: 88, carisma: 90, consistencia: 88, neumaticos: 89, adelantamiento: 87, defensa: 93 },
       look: { skin: '#E8B892', hairColor: '#231D1A', hairStyle: 'spiky', beard: 'none', browStyle: 'happy', helmetMain: '#0044CC', helmetStripe: '#FFFFFF', helmetAccent: '#FF3355', visor: '#2563EB' }
     },
     {
       id: 'hamilton', name: 'Lewis Hamilton', short: 'HAM', number: 44, teamId: 'ferrari', flag: '🇬🇧', tagline: 'Leyenda 7× Campeón',
-      stats: { velocidad: 92, aceleracion: 91, maniobrabilidad: 93, freno: 95, tecnica: 96, carisma: 98, consistencia: 94, neumaticos: 96 },
+      stats: { velocidad: 92, aceleracion: 91, maniobrabilidad: 93, freno: 95, tecnica: 96, carisma: 98, consistencia: 94, neumaticos: 96, adelantamiento: 95, defensa: 94 },
       look: { skin: '#8D5524', hairColor: '#181414', hairStyle: 'braids', beard: 'beard', browStyle: 'sharp', helmetMain: '#FFE600', helmetStripe: '#E80020', helmetAccent: '#7C3AED', visor: '#9333EA' }
     },
     {
       id: 'piastri', name: 'Oscar Piastri', short: 'PIA', number: 81, teamId: 'mclaren', flag: '🇦🇺', tagline: 'Hielo Australiano',
-      stats: { velocidad: 92, aceleracion: 91, maniobrabilidad: 91, freno: 91, tecnica: 90, carisma: 89, consistencia: 92, neumaticos: 90 },
+      stats: { velocidad: 92, aceleracion: 91, maniobrabilidad: 91, freno: 91, tecnica: 90, carisma: 89, consistencia: 92, neumaticos: 90, adelantamiento: 93, defensa: 91 },
       look: { skin: '#F5C6A5', hairColor: '#4E3824', hairStyle: 'swept', beard: 'none', browStyle: 'sharp', helmetMain: '#FF8000', helmetStripe: '#00CC66', helmetAccent: '#FFD43B', visor: '#0EA5E9' }
     },
     {
       id: 'camara', name: 'R. Câmara', short: 'CAM', number: 38, teamId: 'haas', flag: '🇧🇷', tagline: 'Talento Brasileño',
-      stats: { velocidad: 82, aceleracion: 84, maniobrabilidad: 83, freno: 80, tecnica: 82, carisma: 86, consistencia: 81, neumaticos: 82 },
+      stats: { velocidad: 82, aceleracion: 84, maniobrabilidad: 83, freno: 80, tecnica: 82, carisma: 86, consistencia: 81, neumaticos: 82, adelantamiento: 84, defensa: 79 },
       look: { skin: '#E2AC84', hairColor: '#2B1F16', hairStyle: 'wavy', beard: 'none', browStyle: 'happy', helmetMain: '#00B84D', helmetStripe: '#FFD500', helmetAccent: '#0047AB', visor: '#16A34A' }
     },
     {
       id: 'lindblad', name: 'A. Lindblad', short: 'LIN', number: 41, teamId: 'racingbulls', flag: '🇬🇧', tagline: 'Velocidad Pura Joven',
-      stats: { velocidad: 83, aceleracion: 85, maniobrabilidad: 83, freno: 80, tecnica: 81, carisma: 82, consistencia: 81, neumaticos: 82 },
+      stats: { velocidad: 83, aceleracion: 85, maniobrabilidad: 83, freno: 80, tecnica: 81, carisma: 82, consistencia: 81, neumaticos: 82, adelantamiento: 85, defensa: 79 },
       look: { skin: '#D69E76', hairColor: '#221B17', hairStyle: 'spiky', beard: 'none', browStyle: 'fierce', helmetMain: '#1E3A8A', helmetStripe: '#FF2A44', helmetAccent: '#FFFFFF', visor: '#38BDF8' }
     },
     {
       id: 'sainz', name: 'Carlos Sainz', short: 'SAI', number: 55, teamId: 'williams', flag: '🇪🇸', tagline: 'Smooth Operator',
-      stats: { velocidad: 90, aceleracion: 89, maniobrabilidad: 91, freno: 91, tecnica: 91, carisma: 93, consistencia: 92, neumaticos: 91 },
+      stats: { velocidad: 90, aceleracion: 89, maniobrabilidad: 91, freno: 91, tecnica: 91, carisma: 93, consistencia: 92, neumaticos: 91, adelantamiento: 91, defensa: 92 },
       look: { skin: '#E8B28C', hairColor: '#2E1F16', hairStyle: 'wavy', beard: 'beard', browStyle: 'sharp', helmetMain: '#FF2442', helmetStripe: '#FFD500', helmetAccent: '#005AFF', visor: '#DC2626' }
     },
     {
       id: 'verstappen', name: 'Max Verstappen', short: 'VER', number: 1, teamId: 'redbull', flag: '🇳🇱', tagline: 'Super Max · Imparable',
-      stats: { velocidad: 97, aceleracion: 96, maniobrabilidad: 95, freno: 96, tecnica: 96, carisma: 94, consistencia: 97, neumaticos: 95 },
+      stats: { velocidad: 97, aceleracion: 96, maniobrabilidad: 95, freno: 96, tecnica: 96, carisma: 94, consistencia: 97, neumaticos: 95, adelantamiento: 97, defensa: 95 },
       look: { skin: '#F8CCA8', hairColor: '#A67C46', hairStyle: 'spiky', beard: 'stubble', browStyle: 'fierce', helmetMain: '#FFFFFF', helmetStripe: '#FF6A00', helmetAccent: '#FFD700', visor: '#F97316' }
     },
     {
       id: 'colapinto', name: 'F. Colapinto', short: 'COL', number: 43, teamId: 'alpine', flag: '🇦🇷', tagline: 'Furia Albiceleste',
-      stats: { velocidad: 86, aceleracion: 86, maniobrabilidad: 85, freno: 83, tecnica: 84, carisma: 96, consistencia: 85, neumaticos: 86 },
+      stats: { velocidad: 86, aceleracion: 86, maniobrabilidad: 85, freno: 83, tecnica: 84, carisma: 96, consistencia: 85, neumaticos: 86, adelantamiento: 88, defensa: 83 },
       look: { skin: '#F1BE98', hairColor: '#4B3423', hairStyle: 'wavy', beard: 'none', browStyle: 'playful', helmetMain: '#5CC8FF', helmetStripe: '#FFFFFF', helmetAccent: '#FFD43B', visor: '#0284C7' }
     },
     {
       id: 'gasly', name: 'P. Gasly', short: 'GAS', number: 10, teamId: 'alpine', flag: '🇫🇷', tagline: 'Ataque Tricolor',
-      stats: { velocidad: 87, aceleracion: 87, maniobrabilidad: 86, freno: 86, tecnica: 86, carisma: 88, consistencia: 86, neumaticos: 85 },
+      stats: { velocidad: 87, aceleracion: 87, maniobrabilidad: 86, freno: 86, tecnica: 86, carisma: 88, consistencia: 86, neumaticos: 85, adelantamiento: 87, defensa: 86 },
       look: { skin: '#F3C3A1', hairColor: '#4D3624', hairStyle: 'spiky', beard: 'beard', browStyle: 'sharp', helmetMain: '#0066FF', helmetStripe: '#FF4F9A', helmetAccent: '#FFFFFF', visor: '#2563EB' }
     },
     {
       id: 'stroll', name: 'Lance Stroll', short: 'STR', number: 18, teamId: 'astonmartin', flag: '🇨🇦', tagline: 'Especialista en Salidas',
-      stats: { velocidad: 83, aceleracion: 87, maniobrabilidad: 81, freno: 81, tecnica: 83, carisma: 77, consistencia: 80, neumaticos: 82 },
+      stats: { velocidad: 83, aceleracion: 87, maniobrabilidad: 81, freno: 81, tecnica: 83, carisma: 77, consistencia: 80, neumaticos: 82, adelantamiento: 83, defensa: 78 },
       look: { skin: '#F3C19E', hairColor: '#2B2018', hairStyle: 'spiky', beard: 'stubble', browStyle: 'sharp', helmetMain: '#006F62', helmetStripe: '#FFFFFF', helmetAccent: '#CEDC00', visor: '#10B981' }
     },
     {
       id: 'bottas', name: 'Valtteri Bottas', short: 'BOT', number: 77, teamId: 'cadillac', flag: '🇫🇮', tagline: 'El Bigote Más Rápido',
-      stats: { velocidad: 87, aceleracion: 86, maniobrabilidad: 85, freno: 86, tecnica: 87, carisma: 92, consistencia: 87, neumaticos: 88 },
+      stats: { velocidad: 87, aceleracion: 86, maniobrabilidad: 85, freno: 86, tecnica: 87, carisma: 92, consistencia: 87, neumaticos: 88, adelantamiento: 84, defensa: 88 },
       look: { skin: '#FAD2B4', hairColor: '#D9B36C', hairStyle: 'mullet', beard: 'mustache', browStyle: 'happy', helmetMain: '#0099FF', helmetStripe: '#FFFFFF', helmetAccent: '#F5C518', visor: '#0EA5E9' }
     },
     {
       id: 'perez', name: 'Sergio Pérez', short: 'PER', number: 11, teamId: 'cadillac', flag: '🇲🇽', tagline: 'Ministro de Defensa',
-      stats: { velocidad: 86, aceleracion: 86, maniobrabilidad: 86, freno: 88, tecnica: 88, carisma: 95, consistencia: 85, neumaticos: 94 },
+      stats: { velocidad: 86, aceleracion: 86, maniobrabilidad: 86, freno: 88, tecnica: 88, carisma: 95, consistencia: 85, neumaticos: 94, adelantamiento: 87, defensa: 96 },
       look: { skin: '#DEA77E', hairColor: '#241B16', hairStyle: 'swept', beard: 'beard', browStyle: 'happy', helmetMain: '#00A859', helmetStripe: '#FFFFFF', helmetAccent: '#FF2442', visor: '#F59E0B' }
     },
     {
       id: 'bortoleto', name: 'G. Bortoleto', short: 'BOR', number: 5, teamId: 'audi', flag: '🇧🇷', tagline: 'Campeón en Ascenso',
-      stats: { velocidad: 84, aceleracion: 85, maniobrabilidad: 85, freno: 83, tecnica: 84, carisma: 87, consistencia: 85, neumaticos: 84 },
+      stats: { velocidad: 84, aceleracion: 85, maniobrabilidad: 85, freno: 83, tecnica: 84, carisma: 87, consistencia: 85, neumaticos: 84, adelantamiento: 86, defensa: 83 },
       look: { skin: '#EBB790', hairColor: '#3E2B1E', hairStyle: 'wavy', beard: 'none', browStyle: 'playful', helmetMain: '#FFDF00', helmetStripe: '#009C3B', helmetAccent: '#002776', visor: '#15803D' }
     }
   ];

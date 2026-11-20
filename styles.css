@@ -621,25 +621,25 @@ html, body {
   100% { transform: scale(1); }
 }
 
-/* 2-Column Compact 8-Stat Bars Grid */
+/* 2-Column Compact 10-Stat Bars Grid */
 .stat-bars-grid {
   display: grid;
   grid-template-columns: 1fr 1fr;
-  gap: 7px 14px;
+  gap: 5px 14px;
 }
 .stat-row-top {
   display: flex;
   justify-content: space-between;
-  font-size: 0.74rem;
+  font-size: 0.72rem;
   font-weight: 700;
-  margin-bottom: 3px;
+  margin-bottom: 2px;
 }
 .stat-val {
   font-family: 'Fredoka', sans-serif;
-  font-size: 0.85rem;
+  font-size: 0.82rem;
 }
 .stat-track {
-  height: 7px;
+  height: 6px;
   background: rgba(255, 255, 255, 0.14);
   border-radius: 999px;
   overflow: hidden;
@@ -1879,12 +1879,12 @@ body.editor-open #game-canvas:active {
 .ed-sliders-stack {
   display: flex;
   flex-direction: column;
-  gap: 11px;
+  gap: 7px;
 }
 .ed-slider-row {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 2px;
 }
 .ed-slider-top {
   display: flex;
@@ -1892,14 +1892,14 @@ body.editor-open #game-canvas:active {
   align-items: center;
 }
 .ed-slider-lbl {
-  font-size: 0.8rem;
+  font-size: 0.76rem;
   font-weight: 700;
   color: #E2E8F0;
 }
 .ed-slider-val {
   font-family: 'Fredoka', sans-serif;
   font-weight: 700;
-  font-size: 1.02rem;
+  font-size: 0.94rem;
   min-width: 28px;
   text-align: right;
 }
@@ -2006,4 +2006,283 @@ body.editor-open #game-canvas:active {
     transform: translateY(0);
   }
 }
+
+/* ==========================================================================
+   PARCHE v1.5 — ESPEJO RETROVISOR SUPERIOR, BARRA "ADELANTAR" Y RADAR TRASERO
+   ========================================================================== */
+
+/* 1. Espejo Retrovisor Superior (Marco fino horizontal con centro 100% transparente para WebGL) */
+.hud-rear-mirror {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  background: transparent;
+  border: 3px solid rgba(15, 20, 34, 0.92);
+  border-radius: 13px;
+  padding: 0;
+  overflow: hidden;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.55), 0 0 0 1.5px rgba(255, 255, 255, 0.28);
+  pointer-events: none;
+  transition: border-color 0.16s ease, box-shadow 0.16s ease;
+}
+.hud-rear-mirror.mirror-warn {
+  border-color: #F59E0B;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.55), 0 0 18px rgba(245, 158, 11, 0.65);
+}
+.hud-rear-mirror.mirror-danger {
+  border-color: #EF4444;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.55), 0 0 22px rgba(239, 68, 68, 0.85);
+  animation: radarDangerPulse 0.42s ease infinite alternate;
+}
+.mirror-bezel-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 2px 8px;
+  background: rgba(11, 14, 24, 0.88);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.18);
+  font-family: 'Fredoka', sans-serif;
+  font-size: 0.60rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  color: rgba(226, 232, 240, 0.88);
+}
+.mirror-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #22C55E;
+  box-shadow: 0 0 8px #22C55E;
+}
+.hud-rear-mirror.mirror-warn .mirror-dot {
+  background: #F59E0B;
+  box-shadow: 0 0 8px #F59E0B;
+}
+.hud-rear-mirror.mirror-danger .mirror-dot {
+  background: #EF4444;
+  box-shadow: 0 0 10px #EF4444;
+}
+.mirror-label {
+  flex: 1;
+  text-align: center;
+  color: #CBD5E1;
+}
+.mirror-threat-chip {
+  font-size: 0.58rem;
+  font-weight: 800;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.1);
+  color: #94A3B8;
+}
+.hud-rear-mirror.mirror-warn .mirror-threat-chip {
+  background: rgba(245, 158, 11, 0.24);
+  color: #FCD34D;
+}
+.hud-rear-mirror.mirror-danger .mirror-threat-chip {
+  background: rgba(239, 68, 68, 0.34);
+  color: #FCA5A5;
+}
+.mirror-viewport {
+  position: relative;
+  width: 320px;
+  height: 58px;
+  background: transparent !important;
+  overflow: hidden;
+  box-shadow: inset 0 0 10px rgba(0, 0, 0, 0.26);
+}
+.mirror-glass-glare {
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.12) 0%, rgba(255, 255, 255, 0) 28%);
+  pointer-events: none;
+}
+
+/* 2. Barra Táctica de Rebufo en Recta ("ADELANTAR") */
+.hud-overtake-wrap {
+  position: fixed;
+  top: 124px;
+  left: 50%;
+  transform: translate(-50%, -10px) scale(0.92);
+  width: min(344px, 88vw);
+  background: rgba(11, 14, 24, 0.88);
+  border: 2.5px solid rgba(249, 115, 22, 0.72);
+  border-radius: 15px;
+  padding: 8px 12px 7px;
+  backdrop-filter: blur(10px);
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.55), 0 0 20px rgba(249, 115, 22, 0.25);
+  pointer-events: none;
+  opacity: 0;
+  z-index: 16;
+  transition: opacity 0.18s ease, transform 0.22s var(--spring), border-color 0.18s ease, box-shadow 0.18s ease;
+}
+.hud-overtake-wrap.visible {
+  opacity: 1;
+  transform: translate(-50%, 0) scale(1);
+}
+.hud-overtake-wrap.paused-curve {
+  border-color: rgba(148, 163, 184, 0.45);
+  box-shadow: 0 8px 22px rgba(0, 0, 0, 0.48);
+}
+.hud-overtake-wrap.executing {
+  border-color: #00F5D4;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.6), 0 0 26px rgba(0, 245, 212, 0.72);
+  animation: overtakePulse 0.36s ease infinite alternate;
+}
+@keyframes overtakePulse {
+  from { transform: translate(-50%, 0) scale(1); }
+  to { transform: translate(-50%, -2px) scale(1.03); }
+}
+.ov-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 5px;
+}
+.ov-title {
+  font-family: 'Fredoka', sans-serif;
+  font-weight: 700;
+  font-size: 0.86rem;
+  letter-spacing: 0.04em;
+  color: #FDBA74;
+  white-space: nowrap;
+}
+.hud-overtake-wrap.executing .ov-title {
+  color: #00F5D4;
+}
+.ov-meta {
+  font-size: 0.66rem;
+  font-weight: 800;
+  color: #CBD5E1;
+  background: rgba(255, 255, 255, 0.1);
+  padding: 2px 8px;
+  border-radius: 999px;
+  white-space: nowrap;
+}
+.ov-track {
+  height: 12px;
+  background: rgba(255, 255, 255, 0.14);
+  border-radius: 999px;
+  overflow: hidden;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+}
+.ov-fill {
+  height: 100%;
+  width: 0%;
+  border-radius: 999px;
+  background: linear-gradient(90deg, #F97316 0%, #FFD43B 58%, #00F5D4 100%);
+  transition: width 0.06s linear;
+}
+.hud-overtake-wrap.paused-curve .ov-fill {
+  background: linear-gradient(90deg, #64748B, #94A3B8);
+}
+.hud-overtake-wrap.executing .ov-fill {
+  background: linear-gradient(90deg, #00E5FF, #00F5D4, #FFFFFF);
+}
+.ov-status {
+  margin-top: 4px;
+  text-align: center;
+  font-family: 'Fredoka', sans-serif;
+  font-size: 0.69rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  color: #E2E8F0;
+}
+.hud-overtake-wrap.executing .ov-status {
+  color: #5EEAD4;
+}
+
+/* 3. Radar de Proximidad Trasero Direccional (Borde Inferior Centro) */
+.hud-rear-radar {
+  position: fixed;
+  bottom: 18px;
+  left: 50%;
+  transform: translate(-50%, 16px) scale(0.94);
+  background: rgba(11, 14, 24, 0.88);
+  border: 2px solid rgba(245, 158, 11, 0.65);
+  border-radius: 16px;
+  padding: 7px 11px 6px;
+  backdrop-filter: blur(10px);
+  box-shadow: 0 10px 26px rgba(0, 0, 0, 0.55);
+  pointer-events: none;
+  opacity: 0;
+  z-index: 15;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  transition: opacity 0.16s ease, transform 0.2s var(--spring), border-color 0.15s ease, box-shadow 0.15s ease;
+}
+.hud-rear-radar.visible {
+  opacity: 1;
+  transform: translate(-50%, 0) scale(1);
+}
+.hud-rear-radar.warn {
+  border-color: #F59E0B;
+  box-shadow: 0 10px 26px rgba(0, 0, 0, 0.55), 0 0 18px rgba(245, 158, 11, 0.42);
+}
+.hud-rear-radar.danger {
+  border-color: #EF4444;
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.6), 0 0 24px rgba(239, 68, 68, 0.72);
+  animation: radarDangerPulse 0.38s ease infinite alternate;
+}
+@keyframes radarDangerPulse {
+  from { filter: brightness(1); }
+  to { filter: brightness(1.18); }
+}
+.rr-arrows-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.rr-dir {
+  font-family: 'Fredoka', sans-serif;
+  font-weight: 700;
+  font-size: 0.72rem;
+  letter-spacing: 0.04em;
+  padding: 3px 9px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.07);
+  color: rgba(148, 163, 184, 0.55);
+  border: 1.5px solid rgba(255, 255, 255, 0.1);
+  transition: background 0.12s ease, color 0.12s ease, border-color 0.12s ease, transform 0.12s ease;
+}
+.rr-dir.active-warn {
+  background: rgba(245, 158, 11, 0.28);
+  color: #FDE68A;
+  border-color: #F59E0B;
+  transform: scale(1.05);
+}
+.rr-dir.active-danger {
+  background: rgba(239, 68, 68, 0.36);
+  color: #FFFFFF;
+  border-color: #EF4444;
+  box-shadow: 0 0 12px rgba(239, 68, 68, 0.68);
+  transform: scale(1.08);
+}
+.rr-detail {
+  font-family: 'Fredoka', sans-serif;
+  font-weight: 700;
+  font-size: 0.69rem;
+  letter-spacing: 0.04em;
+  color: #FCD34D;
+}
+.hud-rear-radar.danger .rr-detail {
+  color: #FCA5A5;
+}
+
+@media (max-width: 920px) {
+  .mirror-viewport { width: 256px; height: 48px; }
+  .hud-overtake-wrap { top: 108px; }
+  .hud-rear-radar { bottom: 96px; }
+}
+@media (max-width: 680px) {
+  .mirror-viewport { width: 204px; height: 42px; }
+  .mirror-bezel-top { font-size: 0.54rem; }
+  .hud-overtake-wrap { top: 88px; width: min(260px, 86vw); padding: 6px 9px; }
+  .rr-dir { font-size: 0.64rem; padding: 2px 7px; }
+}
+
 

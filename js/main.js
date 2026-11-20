@@ -596,6 +596,15 @@
     const meterWrap = document.getElementById('hud-launch-meter');
     if (meterWrap) meterWrap.classList.add('visible');
 
+    const ovWrap = document.getElementById('hud-overtake-wrap');
+    if (ovWrap) ovWrap.classList.remove('visible', 'executing', 'paused-curve');
+    const radarEl = document.getElementById('hud-rear-radar');
+    if (radarEl) radarEl.classList.remove('visible', 'warn', 'danger');
+    const mirrorEl = document.getElementById('hud-rear-mirror');
+    if (mirrorEl) mirrorEl.classList.remove('mirror-warn', 'mirror-danger');
+    const mirrorChip = document.getElementById('hud-mirror-threat');
+    if (mirrorChip) mirrorChip.textContent = 'DESPEJADO';
+
     navigateTo('race', true);
   }
 
@@ -649,7 +658,7 @@
     document.getElementById('hud-moral-mult').textContent = `×${hud.moralMultiplier.toFixed(2)} STATS`;
     document.getElementById('hud-moral-box').classList.toggle('overdrive', hud.moralOverdrive);
 
-    document.getElementById('speed-lines').classList.toggle('active', hud.turboActive || hud.kmh > 305);
+    document.getElementById('speed-lines').classList.toggle('active', hud.turboActive || !!hud.overtake?.executing || hud.kmh > 305);
 
     const flashEl = document.getElementById('launch-flash');
     if (flashEl) flashEl.classList.toggle('active', !!hud.launchFlashActive);
@@ -675,6 +684,86 @@
         meterHint.textContent = '⚡ ¡ACELERA AHORA!';
       } else {
         meterHint.textContent = '🚦 ESPERA A QUE SE APAGUEN LAS 5 LUCES';
+      }
+    }
+
+    // Parche v1.5: Dynamic Straight-Line Slipstream "ADELANTAR" Bar
+    const ov = hud.overtake;
+    const ovWrap = document.getElementById('hud-overtake-wrap');
+    if (ovWrap && ov) {
+      const showOv = hud.phase === 'racing' && ov.active;
+      ovWrap.classList.toggle('visible', showOv);
+      ovWrap.classList.toggle('executing', showOv && ov.executing);
+      ovWrap.classList.toggle('paused-curve', showOv && !ov.executing && !ov.charging);
+      if (showOv) {
+        const pct = Math.round(ov.progress * 100);
+        const ovFill = document.getElementById('hud-overtake-fill');
+        const ovMeta = document.getElementById('hud-overtake-meta');
+        const ovStatus = document.getElementById('hud-overtake-status');
+        if (ovFill) ovFill.style.width = `${pct}%`;
+        if (ovMeta) {
+          ovMeta.textContent = ov.targetShort
+            ? `vs ${ov.targetShort} · ADE ${ov.playerStat} / DEF ${ov.rivalDefStat}`
+            : `ADE ${ov.playerStat}`;
+        }
+        if (ovStatus) {
+          if (ov.executing) {
+            ovStatus.textContent = `⚡ ¡MANIOBRA DE ADELANTAMIENTO EN CURSO!`;
+          } else if (ov.charging) {
+            ovStatus.textContent = `REBUFO EN RECTA · ${pct}% (${Math.round(ov.targetDist)}m)`;
+          } else if (!ov.onStraight) {
+            ovStatus.textContent = `PAUSADO EN CURVA · ${pct}%`;
+          } else {
+            ovStatus.textContent = `PERDIENDO REBUFO · ${pct}%`;
+          }
+        }
+      }
+    }
+
+    // Parche v1.5: Rear Directional Proximity Radar + Mirror Threat Trim
+    const rt = hud.rearThreat;
+    const mirrorEl = document.getElementById('hud-rear-mirror');
+    const mirrorChip = document.getElementById('hud-mirror-threat');
+    const radarEl = document.getElementById('hud-rear-radar');
+    if (rt) {
+      const activeThreat = hud.phase === 'racing' && rt.active;
+      const isDanger = activeThreat && rt.severity === 'danger';
+      const isWarn = activeThreat && rt.severity === 'warn';
+
+      if (mirrorEl) {
+        mirrorEl.classList.toggle('mirror-warn', isWarn);
+        mirrorEl.classList.toggle('mirror-danger', isDanger);
+      }
+      if (mirrorChip) {
+        if (activeThreat) {
+          const sideTxt = rt.side === 'left' ? 'IZQ' : (rt.side === 'right' ? 'DER' : 'CEN');
+          mirrorChip.textContent = `${rt.short} · ${Math.round(rt.dist)}m ${sideTxt}`;
+        } else {
+          mirrorChip.textContent = 'DESPEJADO';
+        }
+      }
+
+      if (radarEl) {
+        radarEl.classList.toggle('visible', activeThreat);
+        radarEl.classList.toggle('warn', isWarn);
+        radarEl.classList.toggle('danger', isDanger);
+
+        const setDir = (id, active, sev) => {
+          const el = document.getElementById(id);
+          if (!el) return;
+          el.classList.toggle('active-warn', active && sev === 'warn');
+          el.classList.toggle('active-danger', active && sev === 'danger');
+        };
+        setDir('rr-left', activeThreat && rt.leftActive, rt.leftSeverity);
+        setDir('rr-center', activeThreat && rt.centerActive, rt.centerSeverity);
+        setDir('rr-right', activeThreat && rt.rightActive, rt.rightSeverity);
+
+        const detailEl = document.getElementById('rr-detail');
+        if (detailEl && activeThreat) {
+          const sideLabel = rt.side === 'left' ? 'IZQUIERDA' : (rt.side === 'right' ? 'DERECHA' : 'CENTRO');
+          const prefix = isDanger ? '🚨 ATAQUE INMINENTE' : '⚠️ RIVAL DETRÁS';
+          detailEl.textContent = `${prefix} · ${rt.short} (${Math.round(rt.dist)}m · ${sideLabel})`;
+        }
       }
     }
 

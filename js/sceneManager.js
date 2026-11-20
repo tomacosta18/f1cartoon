@@ -1,7 +1,8 @@
 // ============================================================================
-// SCENEMANAGER.JS — Parche v1.4: ACESFilmicToneMapping (1.1), FogExp2,
-//                   Cámara de Persecución Estable con Damping FPS-Independiente
-//                   y Horizonte Nivelado (0,1,0), Cero Basura GC por Frame
+// SCENEMANAGER.JS — Parche v1.5: Espejo Retrovisor 3D (PerspectiveCamera +
+//                   setViewport/setScissor optimizado a 30 FPS sin parpadeo),
+//                   ACESFilmicToneMapping (1.1), FogExp2, Cámara Estable con
+//                   Horizonte Nivelado (0,1,0) y Cero Basura GC por Frame
 // ============================================================================
 (function (global) {
   'use strict';
@@ -31,6 +32,38 @@
       // Frustum estabilizado (near = 0.5, far = 3500) con horizonte nivelado (0, 1, 0)
       this.camera = new THREE.PerspectiveCamera(54, window.innerWidth / window.innerHeight, 0.5, 3500);
       this.camera.up.set(0, 1, 0);
+
+      // Parche v1.5: Cámara dedicada de espejo retrovisor superior (optimizada a 30 FPS)
+      this.rearCamera = new THREE.PerspectiveCamera(56, 320 / 58, 0.5, 950);
+      this.rearCamera.up.set(0, 1, 0);
+      this._mirrorRT = new THREE.WebGLRenderTarget(512, 96, {
+        minFilter: THREE.LinearFilter,
+        magFilter: THREE.LinearFilter
+      });
+      this._mirrorBlitScene = new THREE.Scene();
+      this._mirrorBlitCam = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
+      const mirrorGeo = new THREE.PlaneGeometry(2, 2);
+      // Reflejo horizontal auténtico de espejo (izq real -> izq espejo, der real -> der espejo)
+      const uvAttr = mirrorGeo.attributes.uv;
+      for (let i = 0; i < uvAttr.count; i++) {
+        uvAttr.setX(i, 1 - uvAttr.getX(i));
+      }
+      uvAttr.needsUpdate = true;
+      const mirrorMat = new THREE.MeshBasicMaterial({
+        map: this._mirrorRT.texture,
+        depthTest: false,
+        depthWrite: false,
+        side: THREE.FrontSide
+      });
+      this._mirrorQuad = new THREE.Mesh(mirrorGeo, mirrorMat);
+      this._mirrorBlitScene.add(this._mirrorQuad);
+      this._mirrorAccum = 1 / 30;
+      this._mirrorDirty = true;
+      this.mirrorRenderCount = 0;
+      this._mirrorViewportEl = null;
+      this._rearCamPos = new THREE.Vector3();
+      this._rearCamLook = new THREE.Vector3();
+      this._rearCamForward = new THREE.Vector3(0, 0, 1);
 
       this.hemiLight = new THREE.HemisphereLight('#F8FAFC', '#1E293B', 0.42);
       this.scene.add(this.hemiLight);
@@ -470,6 +503,11 @@
       this.camera.position.copy(this.camPosSmooth);
       this._camLookMat.lookAt(this.camPosSmooth, this.camLookSmooth, this._camUp);
       this.camera.quaternion.setFromRotationMatrix(this._camLookMat);
+
+      this._mirrorAccum = 1 / 30;
+      this._mirrorDirty = true;
+      this.mirrorRenderCount = 0;
+      this._mirrorViewportEl = document.getElementById('hud-rear-mirror-viewport');
     }
 
     cycleCameraPreset() {
@@ -559,7 +597,97 @@
       else if (this.mode === 'circuit_preview') this._animateCircuitPreview(dt);
       else if (this.mode === 'race' && this.raceEngine && hudSnapshot) this._animateRace(dt, hudSnapshot);
       else if (this.mode === 'podium') this._animatePodium(dt);
+
+      const w = window.innerWidth;
+      const h = window.innerHeight;
+      this.renderer.setScissorTest(false);
+      this.renderer.setViewport(0, 0, w, h);
       this.renderer.render(this.scene, this.camera);
+
+      if (this.mode === 'race' && this.raceEngine) {
+        this._renderRearViewMirror(dt);
+      }
+    }
+
+    // ========================================================================
+    // 3. ESPEJO RETROVISOR SUPERIOR 3D (PerspectiveCamera + setViewport/setScissor,
+    //    OPTIMIZADO A 30 FPS SIN PARPADEO Y CON REFLEJO HORIZONTAL REAL)
+    // ========================================================================
+    _renderRearViewMirror(dt) {
+      const p = this.raceEngine && this.raceEngine.player;
+      if (!p) return;
+
+      if (!this._mirrorViewportEl) {
+        this._mirrorViewportEl = document.getElementById('hud-rear-mirror-viewport');
+      }
+      const el = this._mirrorViewportEl;
+      if (!el) return;
+
+      const rect = el.getBoundingClientRect();
+      if (rect.width < 40 || rect.height < 16) return;
+
+      const targetAspect = rect.width / rect.height;
+      if (Math.abs(this.rearCamera.aspect - targetAspect) > 0.02) {
+        this.rearCamera.aspect = targetAspect;
+        this.rearCamera.updateProjectionMatrix();
+      }
+
+      // Throttle expensive 3D scene pass strictly to 30 FPS (0.0333s interval)
+      const MIRROR_STEP = 1 / 30;
+      this._mirrorAccum += dt;
+      if (this._mirrorDirty || this._mirrorAccum >= MIRROR_STEP) {
+        this._mirrorAccum = this._mirrorAccum >= MIRROR_STEP * 2 ? 0 : (this._mirrorAccum - MIRROR_STEP);
+        this._mirrorDirty = false;
+
+        this._rearCamForward.copy(p.worldForward);
+        this._rearCamForward.y = 0;
+        if (this._rearCamForward.lengthSq() < 1e-4) this._rearCamForward.set(0, 0, 1);
+        this._rearCamForward.normalize();
+
+        // Mount slightly above rear roll-hoop looking strictly behind the car with level horizon
+        this._rearCamPos.copy(p.worldPos).addScaledVector(this._rearCamForward, -0.45);
+        this._rearCamPos.y = 2.15;
+
+        this._rearCamLook.copy(p.worldPos).addScaledVector(this._rearCamForward, -46.0);
+        this._rearCamLook.y = 1.15;
+
+        this.rearCamera.up.set(0, 1, 0);
+        this.rearCamera.position.copy(this._rearCamPos);
+        this.rearCamera.lookAt(this._rearCamLook);
+
+        // Temporarily hide player's own car & reuse this frame's already-rendered 2048x2048 shadow map (massive FPS gain!)
+        const prevVisible = p.visual.root.visible;
+        const prevShadowAuto = this.renderer.shadowMap.autoUpdate;
+        p.visual.root.visible = false;
+        this.renderer.shadowMap.autoUpdate = false;
+
+        this.renderer.setScissorTest(false);
+        this.renderer.setRenderTarget(this._mirrorRT);
+        this.renderer.clear();
+        this.renderer.render(this.scene, this.rearCamera);
+        this.renderer.setRenderTarget(null);
+
+        this.renderer.shadowMap.autoUpdate = prevShadowAuto;
+        p.visual.root.visible = prevVisible;
+        this.mirrorRenderCount++;
+      }
+
+      // Blit cached 30 FPS mirror texture every frame via setViewport + setScissor (zero flicker!)
+      const vx = Math.round(rect.left);
+      const vy = Math.round(window.innerHeight - rect.bottom);
+      const vw = Math.round(rect.width);
+      const vh = Math.round(rect.height);
+
+      const prevAutoClear = this.renderer.autoClear;
+      this.renderer.autoClear = false;
+      this.renderer.setScissorTest(true);
+      this.renderer.setViewport(vx, vy, vw, vh);
+      this.renderer.setScissor(vx, vy, vw, vh);
+      this.renderer.clearDepth();
+      this.renderer.render(this._mirrorBlitScene, this._mirrorBlitCam);
+      this.renderer.setScissorTest(false);
+      this.renderer.setViewport(0, 0, window.innerWidth, window.innerHeight);
+      this.renderer.autoClear = prevAutoClear;
     }
 
     _animateStudioEntities(dt) {

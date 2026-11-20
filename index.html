@@ -56,7 +56,7 @@
           <span class="nf-match">99% ADRENALINA</span>
           <span class="nf-tag">2026</span>
           <span class="nf-tag-outline">22 PILOTOS</span>
-          <span class="nf-tag-outline">PARCHE v1.4</span>
+          <span class="nf-tag-outline">PARCHE v1.5</span>
         </div>
 
         <h1 class="nf-hero-title">
@@ -64,7 +64,7 @@
         </h1>
 
         <p class="nf-hero-desc">
-          Carreras arcade 3D estilo Nintendo Switch con pilotos estilizados, casco y volante articulado, 8 atributos con impacto real, Editor 3D en vivo, Turbo y Moral en Mónaco, Silverstone y Abu Dabi.
+          Carreras arcade 3D estilo Nintendo Switch con pilotos estilizados, casco y volante articulado, 10 atributos tácticos (incluidos Adelantamiento y Defensa), espejo retrovisor 3D, rebufo dinámico y Editor 3D en vivo.
         </p>
 
         <div class="nf-hero-actions">
@@ -216,6 +216,18 @@
       </div>
 
       <div class="hud-top-center">
+        <!-- PARCHE v1.5: ESPEJO RETROVISOR SUPERIOR 3D (RENDER 30 FPS VIA SETVIEWPORT/SETSCISSOR) -->
+        <div id="hud-rear-mirror" class="hud-rear-mirror" aria-label="Espejo retrovisor 3D">
+          <div class="mirror-bezel-top">
+            <span class="mirror-dot"></span>
+            <span class="mirror-label">RETROVISOR 3D</span>
+            <span id="hud-mirror-threat" class="mirror-threat-chip">DESPEJADO</span>
+          </div>
+          <div id="hud-rear-mirror-viewport" class="mirror-viewport">
+            <div class="mirror-glass-glare"></div>
+          </div>
+        </div>
+
         <div class="hud-track-pills">
           <span id="hud-circuit-pill" class="hud-pill-sm">🇲🇨 Mónaco</span>
           <span id="hud-weather-pill" class="hud-pill-sm">☀️ Sol</span>
@@ -248,7 +260,29 @@
       </div>
     </div>
 
+    <!-- PARCHE v1.5: BARRA TÁCTICA DE REBUFO EN RECTA ("ADELANTAR") -->
+    <div id="hud-overtake-wrap" class="hud-overtake-wrap" aria-live="polite">
+      <div class="ov-header">
+        <span class="ov-title">⚔️ ADELANTAR</span>
+        <span id="hud-overtake-meta" class="ov-meta">vs VER · ADE 92 / DEF 95</span>
+      </div>
+      <div class="ov-track">
+        <div id="hud-overtake-fill" class="ov-fill"></div>
+      </div>
+      <div id="hud-overtake-status" class="ov-status">REBUFO EN RECTA · 0%</div>
+    </div>
+
     <div id="countdown-banner" class="countdown-banner">3</div>
+
+    <!-- PARCHE v1.5: RADAR DE PROXIMIDAD TRASERO DIRECCIONAL -->
+    <div id="hud-rear-radar" class="hud-rear-radar" aria-live="polite">
+      <div class="rr-arrows-row">
+        <span id="rr-left" class="rr-dir rr-dir-left">◀ IZQUIERDA</span>
+        <span id="rr-center" class="rr-dir rr-dir-center">▼ CENTRO</span>
+        <span id="rr-right" class="rr-dir rr-dir-right">DERECHA ▶</span>
+      </div>
+      <div id="rr-detail" class="rr-detail">⚠️ RIVAL DETRÁS · 12m</div>
+    </div>
 
     <div class="hud-bottom">
       <div id="hud-moral-box" class="hud-meter-card moral-card">
